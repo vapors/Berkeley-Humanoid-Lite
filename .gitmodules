@@ -2,3 +2,7 @@
 	path = source/berkeley_humanoid_lite_assets
 	url = https://github.com/vapors/Berkeley-Humanoid-Lite-Assets.git
 	branch = vapors
+[submodule "source/berkeley_humanoid_lite_lowlevel"]
+	path = source/berkeley_humanoid_lite_lowlevel
+	url = https://github.com/vapors/Berkeley-Humanoid-Lite-Lowlevel.git
+	branch = vapors
