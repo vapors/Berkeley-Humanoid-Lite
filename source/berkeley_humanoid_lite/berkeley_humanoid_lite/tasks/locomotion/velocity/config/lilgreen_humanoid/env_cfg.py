@@ -194,6 +194,7 @@ class RewardsCfg:
     # penalize deviation of shoulder joints
     joint_deviation_shoulder = RewTerm(
         func=mdp.joint_deviation_l1,
+        
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_pitch_joint", ".*_shoulder_roll_joint", ".*_shoulder_yaw_joint"])},
     )
