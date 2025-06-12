@@ -1,1 +1,4 @@
- 
+[submodule "source/berkeley_humanoid_lite_assets"]
+	path = source/berkeley_humanoid_lite_assets
+	url = https://github.com/vapors/Berkeley-Humanoid-Lite-Assets.git
+	branch = vapors
