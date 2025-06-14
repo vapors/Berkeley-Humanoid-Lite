@@ -28,9 +28,9 @@ Except a few edge cases, all the commands should be invoked from the root direct
 
 ## Getting Started
 
-Please refer to our [Documentation]() to get started with software and hardware setup.
+Please refer to our [Documentation](https://berkeley-humanoid-lite.gitbook.io/docs) to get started with software and hardware setup.
 
-The latest release of CAD model and 3D print files can be accessed from the [Release]() page.
+The latest release of CAD model and 3D print files can be accessed from the [Release](https://berkeley-humanoid-lite.gitbook.io/docs/releases) page.
 
 
 ## Contributing
