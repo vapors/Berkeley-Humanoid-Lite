@@ -183,8 +183,8 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
         },
-        #weight=-0.2,
-        weight=-0.7,
+        #weight=-0.7, last build
+        weight=-0.75,
     )
 
     # penalize undesired contacts
