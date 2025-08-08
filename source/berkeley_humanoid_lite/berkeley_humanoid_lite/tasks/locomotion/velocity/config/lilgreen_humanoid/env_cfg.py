@@ -184,7 +184,7 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
         },
         #weight=-0.7, last build
-        weight=-0.75,
+        weight=-0.6,
     )
 
     # penalize undesired contacts
@@ -202,13 +202,13 @@ class RewardsCfg:
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
         #weight=-1.0,
-        weight=-0.8,
+        weight=-0.9,
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_roll_joint"])},
         #weight=-1.0,
-        weight=-0.8,
+        weight=-0.9,
     )
 
 
