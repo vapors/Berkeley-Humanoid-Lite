@@ -1,4 +1,4 @@
-policy_checkpoint_path: /home/scott/Berkeley-Humanoid-Lite/logs/rsl_rl/humanoid/2025-07-10_00-15-54/exported/policy.onnx
+policy_checkpoint_path: /home/scott/Berkeley-Humanoid-Lite/logs/rsl_rl/humanoid/2025-08-10_18-10-48/exported/policy.onnx
 ip_robot_addr: 127.0.0.1
 ip_policy_obs_port: 10000
 ip_host_addr: 127.0.0.1
@@ -78,17 +78,21 @@ default_joint_positions:
 - -0.1
 - 0.4
 - -0.3
-- 0.1
+- 0.0
 - 0.0
 - 0.0
 - 0.0
 - -0.1
 - 0.4
 - -0.3
-- 0.1
+- 0.0
 - 0.0
 num_observations: 45
 history_length: 0
+command_velocity:
+- -0.005234420299530029
+- 0.27995210886001587
+- -0.20942464470863342
 num_actions: 12
 action_scale: 0.25
 action_indices:

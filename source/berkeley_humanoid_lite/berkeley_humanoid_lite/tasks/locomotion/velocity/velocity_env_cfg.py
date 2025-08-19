@@ -63,7 +63,7 @@ class LocomotionVelocityEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
-    scene: FlatTerrainSceneCfg = FlatTerrainSceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: FlatTerrainSceneCfg = FlatTerrainSceneCfg(num_envs=4096, env_spacing=1)
 
     def __post_init__(self):
         """Post initialization."""
@@ -74,7 +74,7 @@ class LocomotionVelocityEnvCfg(ManagerBasedRLEnvCfg):
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
-        self.sim.disable_contact_processing = True
+        #self.sim.disable_contact_processing = True
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
         # update sensor update periods

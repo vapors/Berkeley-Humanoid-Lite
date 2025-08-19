@@ -112,19 +112,22 @@ class RewardsCfg:
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         params={"command_name": "base_velocity", "std": 0.5},
-        weight=2.0,
+        #weight=2.0,        
+        weight=2.5,
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
         params={"command_name": "base_velocity", "std": 0.5},
-        weight=1.0,
+        #weight=1.0,
+        weight=1.5,
     )
 
     # === Reward for basic behaviors ===
     # termination penalty
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-10.0,
+        #weight=-10.0,        
+        weight=-8.0,
     )
 
     # base motion smoothness
@@ -172,9 +175,10 @@ class RewardsCfg:
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
+            #"threshold": 0.2,
             "threshold": 0.2,
         },
-        weight=2.75,
+        weight=3.5,
     )
     # penalize feet sliding on the ground to exploit physics sim inaccuracies
     feet_slide = RewTerm(
@@ -183,8 +187,9 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
         },
-        #weight=-0.7, last build
-        weight=-0.6,
+        #weight=-0.7, 
+        #weight=-0.6, last build
+        weight=-0.7,
     )
 
     # penalize undesired contacts
@@ -202,13 +207,13 @@ class RewardsCfg:
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
         #weight=-1.0,
-        weight=-0.9,
+        weight=-0.85,
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_roll_joint"])},
         #weight=-1.0,
-        weight=-0.9,
+        weight=-0.75,
     )
 
 
@@ -223,7 +228,8 @@ class TerminationsCfg:
     )
     base_orientation = DoneTerm(
         func=mdp.bad_orientation,
-        params={"limit_angle": 1.0, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
+        #params={"limit_angle": 1.0, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
+        params={"limit_angle": 1.5, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
     )
 
 
