@@ -1,11 +1,21 @@
 import gymnasium as gym
 
-from . import env_cfg, agents
+from . import (
+    agents,
+    env_cfg,
+    env_cfg_hardware,
+    env_cfg_hardware_st3215,
+    env_cfg_hardware_st3215_loaded,
+    env_cfg_hardware_st3215_loaded_v141,
+    env_cfg_hardware_st3215_loaded_v142,
+    env_cfg_hardware_st3215_loaded_v143,
+    env_cfg_stand,
+    env_cfg_stand_st3215,
+    env_cfg_stand_st3215_loaded,
+)
 
-##
-# Register Gym environments.
-##
 
+# Legacy v1.1 baseline. Kept unchanged so historical checkpoints remain reproducible.
 gym.register(
     id="Velocity-Lilgreen-Humanoid-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -13,5 +23,115 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": env_cfg.LilgreenHumanoidEnvCfg,
         "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHumanoidPPORunnerCfg,
+    },
+)
+
+# v1.2.3 standing baseline with symmetric residual action contract v3. Same 45-D actor observation and 12-D action dimensions
+# as Hardware-v0 so actor/critic checkpoints can be continued directly.
+gym.register(
+    id="Velocity-Lilgreen-Stand-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_stand.LilgreenStandEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandPPORunnerCfg,
+    },
+)
+
+# v1.2.3 hardware-oriented locomotion curriculum using the same action contract v3.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware.LilgreenHardwareEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwarePPORunnerCfg,
+    },
+)
+
+
+# v1.3.0 actuator-aware standing branch. v1.2.3 tasks above are intentionally frozen.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_stand_st3215.LilgreenStandST3215EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215PPORunnerCfg,
+    },
+)
+
+# v1.3.0 actuator-aware locomotion curriculum. The 45-D/12-D policy interface and
+# action contract v3 are shared with Stand-ST3215-v0.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215.LilgreenHardwareST3215EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215PPORunnerCfg,
+    },
+)
+
+
+# v1.4.0 loaded-actuator standing branch. This preserves the v1.3.1 Stage-A
+# model and adds the Track 2 loaded standing-transition calibration envelope.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-Loaded-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_stand_st3215_loaded.LilgreenStandST3215LoadedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215LoadedPPORunnerCfg,
+    },
+)
+
+# v1.4.0 loaded-actuator locomotion curriculum. The policy interface remains
+# action contract v3 with the same 45-D observation and 12-D action dimensions.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded.LilgreenHardwareST3215LoadedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedPPORunnerCfg,
+    },
+)
+
+
+# v1.4.1 safer loaded-actuator Hardware curriculum. This is additive so v1.4.0
+# Hardware-ST3215-Loaded-v0 remains reproducible.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v141.LilgreenHardwareST3215LoadedV141EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV141PPORunnerCfg,
+    },
+)
+
+
+# v1.4.2 locomotion-pressure loaded-actuator Hardware curriculum. This is additive so
+# v1.4.0/v1.4.1 Hardware tasks remain reproducible.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v142.LilgreenHardwareST3215LoadedV142EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV142PPORunnerCfg,
+    },
+)
+
+# v1.4.3 move-now loaded-actuator Hardware curriculum. This is additive so
+# v1.4.0/v1.4.1/v1.4.2 Hardware tasks remain reproducible.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v143.LilgreenHardwareST3215LoadedV143EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV143PPORunnerCfg,
     },
 )

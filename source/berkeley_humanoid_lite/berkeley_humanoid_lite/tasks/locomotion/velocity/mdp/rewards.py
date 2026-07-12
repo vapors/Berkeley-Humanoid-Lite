@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_rotate_inverse, yaw_quat
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -79,7 +79,7 @@ def track_lin_vel_xy_yaw_frame_exp(
     """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
     # extract the used quantities (to enable type-hinting)
     asset = env.scene[asset_cfg.name]
-    vel_yaw = quat_rotate_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
     lin_vel_error = torch.sum(
         torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
     )
@@ -95,6 +95,159 @@ def track_ang_vel_z_world_exp(
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
 
+
+
+def _moving_command_mask(env: ManagerBasedRLEnv, command_name: str, threshold: float = 0.12) -> torch.Tensor:
+    """Mask for commands large enough that gait/translation rewards should apply."""
+    command = env.command_manager.get_command(command_name)
+    return torch.linalg.vector_norm(command[:, :2], dim=1) > threshold
+
+
+def moving_velocity_along_command(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_threshold: float = 0.12,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward base velocity projected onto the commanded horizontal direction.
+
+    This is a direct anti-stall term: when the command is clearly nonzero, the
+    policy receives reward for actually translating in the commanded direction.
+    It does not split commands into bins and works for forward, reverse, lateral,
+    and diagonal commands.
+    """
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])[:, :2]
+    projected_speed = torch.sum(vel_yaw * command_dir, dim=1)
+    return torch.clamp(projected_speed, min=0.0) * (command_norm > command_threshold)
+
+
+def moving_no_progress_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_threshold: float = 0.12,
+    min_fraction: float = 0.35,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize bracing in place under clear movement commands.
+
+    The penalty is active only when horizontal command speed is above
+    ``command_threshold``. It penalizes the deficit between the commanded speed
+    fraction and actual velocity along the command direction.
+    """
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])[:, :2]
+    projected_speed = torch.sum(vel_yaw * command_dir, dim=1)
+    required = min_fraction * command_norm
+    deficit = torch.relu(required - projected_speed)
+    return deficit * (command_norm > command_threshold)
+
+
+def moving_single_support_time(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    max_reward_time_s: float = 0.20,
+) -> torch.Tensor:
+    """Reward single-support phases under nonzero motion commands.
+
+    This directly counters the observed double-support bracing behavior while
+    keeping the reward capped so the policy is not encouraged to balance on one
+    foot forever.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+    # Use the shorter of stance contact time and swing air time as a robust phase-time proxy.
+    stance_time = torch.max(torch.where(in_contact, contact_time, torch.zeros_like(contact_time)), dim=1)[0]
+    swing_time = torch.max(torch.where(~in_contact, air_time, torch.zeros_like(air_time)), dim=1)[0]
+    phase_time = torch.minimum(stance_time, swing_time)
+    reward = torch.clamp(phase_time, max=max_reward_time_s)
+    return reward * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_double_support_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize persistent both-feet bracing under clear motion commands."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > force_threshold
+    double_support = torch.all(in_contact, dim=1)
+    return double_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def swing_foot_clearance(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.12,
+    clearance_target_m: float = 0.025,
+    max_reward: float = 1.0,
+) -> torch.Tensor:
+    """Reward lifting an airborne foot above the stance-foot height.
+
+    The reward is active only under clear horizontal motion commands and uses a
+    relative height measure so it is less sensitive to absolute terrain/body-frame
+    offsets.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+
+    asset = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    stance_z = torch.sum(foot_z * in_contact.float(), dim=1) / torch.clamp(
+        torch.sum(in_contact.float(), dim=1), min=1.0
+    )
+    swing_clearance = torch.relu(foot_z - stance_z.unsqueeze(-1))
+    swing_clearance = torch.where(~in_contact, swing_clearance, torch.zeros_like(swing_clearance))
+    reward = torch.clamp(torch.sum(swing_clearance, dim=1) / clearance_target_m, max=max_reward)
+    return reward * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def swing_foot_velocity_along_command(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.12,
+) -> torch.Tensor:
+    """Reward airborne foot motion aligned with the commanded horizontal direction.
+
+    This is a global anti-shuffle term rather than a command-bin curriculum. It
+    supports forward, reverse, lateral, and diagonal commands using the same logic.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    airborne = contact_time <= 0.0
+
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    foot_vel_yaw = quat_apply_inverse(
+        yaw_quat(asset.data.root_quat_w).unsqueeze(1).expand(-1, len(asset_cfg.body_ids), -1),
+        asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :3],
+    )[:, :, :2]
+    projected = torch.sum(foot_vel_yaw * command_dir.unsqueeze(1), dim=-1)
+    reward = torch.sum(torch.clamp(projected, min=0.0) * airborne.float(), dim=1)
+    return reward * (command_norm > command_threshold)
 
 
 #==========================#============================

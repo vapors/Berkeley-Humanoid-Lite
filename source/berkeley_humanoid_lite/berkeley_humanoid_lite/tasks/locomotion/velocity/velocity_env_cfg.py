@@ -68,7 +68,7 @@ class LocomotionVelocityEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 4
+        self.decimation = 8
         self.episode_length_s = 20.0
 
         # simulation settings

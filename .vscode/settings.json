@@ -1,3 +1,5 @@
 {
-    "cmake.sourceDirectory": "/home/scott/Berkeley-Humanoid-Lite/source/berkeley_humanoid_lite_lowlevel"
+    "cmake.sourceDirectory": "/home/scott/Berkeley-Humanoid-Lite/source/berkeley_humanoid_lite_lowlevel",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

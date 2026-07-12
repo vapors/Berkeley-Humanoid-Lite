@@ -11,7 +11,7 @@ from berkeley_humanoid_lite_lowlevel.policy.config import Cfg
 from berkeley_humanoid_lite_lowlevel.policy.gamepad import Se2Gamepad
 
 
-def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+def quat_apply_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """Rotate a vector by the inverse of a quaternion.
 
     Args:
@@ -274,7 +274,7 @@ class MujocoSimulator(MujocoEnv):
             torch.Tensor: Projected gravity vector
         """
         base_quat = self._get_base_quat()
-        projected_gravity = quat_rotate_inverse(base_quat, self.gravity_vector)
+        projected_gravity = quat_apply_inverse(base_quat, self.gravity_vector)
         return projected_gravity
 
     def _get_joint_pos(self) -> torch.Tensor:

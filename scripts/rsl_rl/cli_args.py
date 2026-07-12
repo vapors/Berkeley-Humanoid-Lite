@@ -7,6 +7,24 @@ if TYPE_CHECKING:
     from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
 
 
+def _str_to_bool(value: str | bool) -> bool:
+    """Parse an optional CLI boolean value.
+
+    This lets --resume work as a flag, while still accepting older forms such
+    as --resume true / --resume false.
+    """
+    if isinstance(value, bool):
+        return value
+
+    value = value.lower()
+    if value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if value in {"false", "0", "no", "n", "off"}:
+        return False
+
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got: {value!r}")
+
+
 def add_rsl_rl_args(parser: argparse.ArgumentParser):
     """Add RSL-RL arguments to the parser.
 
@@ -21,7 +39,14 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     )
     arg_group.add_argument("--run_name", type=str, default=None, help="Run name suffix to the log directory.")
     # -- load arguments
-    arg_group.add_argument("--resume", type=bool, default=None, help="Whether to resume from a checkpoint.")
+    arg_group.add_argument(
+        "--resume",
+        nargs="?",
+        const=True,
+        default=None,
+        type=_str_to_bool,
+        help="Resume from a checkpoint. Use --resume, --resume true, or --resume false.",
+    )
     arg_group.add_argument("--load_run", type=str, default=None, help="Name of the run folder to resume from.")
     arg_group.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file to resume from.")
     # -- logger arguments

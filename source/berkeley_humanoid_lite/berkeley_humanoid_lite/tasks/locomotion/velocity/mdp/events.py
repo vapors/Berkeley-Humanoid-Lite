@@ -92,3 +92,40 @@ def randomize_actuator_torque_constant(
 
                 asset.write_joint_stiffness_to_sim(stiffness, joint_ids=actuator.joint_indices, env_ids=env_ids)
                 asset.write_joint_damping_to_sim(damping, joint_ids=actuator.joint_indices, env_ids=env_ids)
+
+
+def set_joint_position_limits(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    lower_limits: list[float],
+    upper_limits: list[float],
+):
+    """Set deterministic hardware joint limits in policy/action order.
+
+    This is a startup event used by the v1.2.3 hardware-aligned tasks so the simulated
+    articulation cannot exploit the wider legacy USD/URDF joint envelope.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+    if asset_cfg.joint_ids == slice(None):
+        joint_ids = torch.arange(asset.num_joints, device=asset.device, dtype=torch.long)
+    else:
+        joint_ids = torch.tensor(asset_cfg.joint_ids, device=asset.device, dtype=torch.long)
+
+    if len(joint_ids) != len(lower_limits) or len(joint_ids) != len(upper_limits):
+        raise ValueError(
+            f"Joint-limit length mismatch: joints={len(joint_ids)}, "
+            f"lower={len(lower_limits)}, upper={len(upper_limits)}"
+        )
+
+    limits = torch.empty((len(env_ids), len(joint_ids), 2), device=asset.device)
+    limits[..., 0] = torch.tensor(lower_limits, device=asset.device)
+    limits[..., 1] = torch.tensor(upper_limits, device=asset.device)
+    asset.write_joint_position_limit_to_sim(
+        limits,
+        joint_ids=joint_ids,
+        env_ids=env_ids,
+        warn_limit_violation=False,
+    )

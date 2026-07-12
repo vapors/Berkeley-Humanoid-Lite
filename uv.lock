@@ -47,7 +47,7 @@ wheels = [
 
 [[package]]
 name = "berkeley-humanoid-lite"
-version = "2025.5.28"
+version = "1.4.1"
 source = { editable = "source/berkeley_humanoid_lite" }
 dependencies = [
     { name = "psutil" },
@@ -58,7 +58,7 @@ requires-dist = [{ name = "psutil" }]
 
 [[package]]
 name = "berkeley-humanoid-lite-assets"
-version = "2025.5.28"
+version = "1.4.1"
 source = { editable = "source/berkeley_humanoid_lite_assets" }
 dependencies = [
     { name = "psutil" },
@@ -69,7 +69,7 @@ requires-dist = [{ name = "psutil" }]
 
 [[package]]
 name = "berkeley-humanoid-lite-lowlevel"
-version = "2025.5.28"
+version = "1.4.1"
 source = { editable = "source/berkeley_humanoid_lite_lowlevel" }
 dependencies = [
     { name = "psutil" },
@@ -80,7 +80,7 @@ requires-dist = [{ name = "psutil" }]
 
 [[package]]
 name = "berkeley-humanoid-lite-workspace"
-version = "0.1.0"
+version = "1.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "berkeley-humanoid-lite" },

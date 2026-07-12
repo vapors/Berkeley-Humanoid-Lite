@@ -189,7 +189,7 @@ class RewardsCfg:
         },
         #weight=-0.7, 
         #weight=-0.6, last build
-        weight=-0.7,
+        weight=-0.6,
     )
 
     # penalize undesired contacts
