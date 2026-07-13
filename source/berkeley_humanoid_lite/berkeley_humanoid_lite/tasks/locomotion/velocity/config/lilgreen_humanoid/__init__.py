@@ -173,3 +173,28 @@ gym.register(
     },
 )
 
+
+
+# v1.4.5 Stand stabilization branch. Same contract v4/vector residual family, but
+# a moderated athletic q_default, 0.43-0.44 m stand target, stand-only anti-lean
+# terms, and gentle balance perturbations.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-Loaded-v5s",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenStandST3215LoadedV145StabilizedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215LoadedV145StabilizedPPORunnerCfg,
+    },
+)
+
+# Matching Hardware task for the stabilized v1.4.5 Stand seed.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v5s",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV145StabilizedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV145StabilizedPPORunnerCfg,
+    },
+)

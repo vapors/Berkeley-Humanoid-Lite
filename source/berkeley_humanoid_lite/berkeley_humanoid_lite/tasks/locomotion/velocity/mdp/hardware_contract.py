@@ -241,5 +241,69 @@ def athletic_default_joint_pos_dict(include_toes: bool = True) -> dict[str, floa
     return values
 
 
+
+# v1.4.5 Stand-stabilized athletic profile. This keeps contract v4/vector residual,
+# but backs the default posture away from the too-deep v1.4.5 crouch that loaded the
+# right knee/ankle in the first Stand-v5 run. The intent is a moderate athletic
+# stance around 0.43-0.44 m COM height while preserving the larger sagittal motion
+# authority needed later for walking.
+TRAINING_DEFAULT_RAD_V1_4_5_STABILIZED = [
+    0.0,
+    0.0,
+    -0.24,
+    0.62,
+    -0.22,
+    0.0,
+    0.0,
+    0.0,
+    -0.24,
+    0.62,
+    -0.22,
+    0.0,
+]
+
+# Use the same vector residual authority as the athletic v5 profile: the stabilizer
+# changes the center/default and rewards, not the amount of hip/knee/ankle pitch
+# authority available to the policy.
+RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED = RESIDUAL_ACTION_SCALE_RAD_V1_4_5_ATHLETIC
+
+# Desired height targets for the stabilized profile. 0.435 m is deliberately in the
+# visually identified sweet spot between the old tall stance and the first v1.4.5
+# deep crouch. The moving target remains lower to allow knee bend during gait.
+V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M = 0.435
+V1_4_5_STABILIZED_MOVING_BASE_COM_HEIGHT_M = 0.415
+
+
+def validate_v1_4_5_stabilized_contract() -> None:
+    """Validate the v1.4.5 stabilized q_default and vector residual profile."""
+    n = len(ACTIONABLE_JOINTS_V1_2_3)
+    if len(TRAINING_DEFAULT_RAD_V1_4_5_STABILIZED) != n:
+        raise ValueError("v1.4.5 stabilized q_default length mismatch")
+    if len(RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED) != n:
+        raise ValueError("v1.4.5 stabilized residual scale length mismatch")
+    for name, default, scale, lower, upper in zip(
+        ACTIONABLE_JOINTS_V1_2_3,
+        TRAINING_DEFAULT_RAD_V1_4_5_STABILIZED,
+        RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED,
+        HARDWARE_LOWER_LIMIT_RAD,
+        HARDWARE_UPPER_LIMIT_RAD,
+    ):
+        if scale <= 0.0:
+            raise ValueError(f"v1.4.5 stabilized residual scale for {name} must be positive")
+        if not lower <= default <= upper:
+            raise ValueError(
+                f"v1.4.5 stabilized default for {name} ({default}) is outside [{lower}, {upper}]"
+            )
+
+
+def athletic_stabilized_default_joint_pos_dict(include_toes: bool = True) -> dict[str, float]:
+    """Return v1.4.5 stabilized athletic q_default keyed by joint name."""
+    values = dict(zip(ACTIONABLE_JOINTS_V1_2_3, TRAINING_DEFAULT_RAD_V1_4_5_STABILIZED))
+    if include_toes:
+        values["leg_left_toe_pitch_joint"] = 0.0
+        values["leg_right_toe_pitch_joint"] = 0.0
+    return values
+
 validate_contract()
 validate_v1_4_5_athletic_contract()
+validate_v1_4_5_stabilized_contract()

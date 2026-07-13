@@ -16,6 +16,7 @@ Older v1.4.0-v1.4.4 tasks are left untouched for reproducibility.
 from __future__ import annotations
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -26,12 +27,17 @@ from berkeley_humanoid_lite.tasks.locomotion.velocity.mdp.hardware_contract impo
     HARDWARE_LOWER_LIMIT_RAD,
     HARDWARE_UPPER_LIMIT_RAD,
     RESIDUAL_ACTION_SCALE_RAD_V1_4_5_ATHLETIC,
+    RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED,
     ST3215_NO_LOAD_SPEED_RAD_S,
     ST3215_PEAK_TORQUE_NM,
     TRAINING_DEFAULT_RAD_V1_4_5_ATHLETIC,
+    TRAINING_DEFAULT_RAD_V1_4_5_STABILIZED,
     V1_4_5_ATHLETIC_MOVING_BASE_COM_HEIGHT_M,
+    V1_4_5_STABILIZED_MOVING_BASE_COM_HEIGHT_M,
     V1_4_5_ATHLETIC_STAND_BASE_COM_HEIGHT_M,
+    V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M,
     athletic_default_joint_pos_dict,
+    athletic_stabilized_default_joint_pos_dict,
 )
 from berkeley_humanoid_lite.tasks.locomotion.velocity.mdp.st3215_actuator_model import (
     DATASET_NAME,
@@ -84,6 +90,11 @@ def _scaled_curves(values: list[list[float]], scale: float) -> list[list[float]]
 def _apply_athletic_default(scene_robot_cfg) -> None:
     """Patch the robot init-state q_default for the v1.4.5 athletic profile."""
     scene_robot_cfg.init_state.joint_pos.update(athletic_default_joint_pos_dict(include_toes=True))
+
+
+def _apply_stabilized_athletic_default(scene_robot_cfg) -> None:
+    """Patch q_default for the v1.4.5 Stand-stabilized athletic profile."""
+    scene_robot_cfg.init_state.joint_pos.update(athletic_stabilized_default_joint_pos_dict(include_toes=True))
 
 
 @configclass
@@ -525,4 +536,262 @@ class LilgreenHardwareST3215LoadedV145EnvCfg(V140ST3215LoadedHardwareAlignedEnvC
     def __post_init__(self):
         super().__post_init__()
         _apply_athletic_default(self.scene.robot)
+        self.events.actuator_gains = None
+
+
+@configclass
+class V145ST3215LoadedAthleticStabilizedActionsCfg(V145ST3215LoadedAthleticActionsCfg):
+    """v1.4.5 stabilized athletic action profile.
+
+    Same contract v4/vector residual idea as v5, but with a moderated q_default
+    applied by the environment. The residual vector is kept large for later gait.
+    """
+
+    joint_pos = mdp.ST3215MeasuredResidualJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=ACTIONABLE_JOINTS_V1_2_3,
+        lower_limits=HARDWARE_LOWER_LIMIT_RAD,
+        upper_limits=HARDWARE_UPPER_LIMIT_RAD,
+        residual_scale_rad=RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED,
+        preserve_order=True,
+        actuator_model_name=(
+            f"{DATASET_NAME}:stage_a_athletic_stabilized+{LOADED_DATASET_NAME}:stage_b_loaded_athletic_stabilized"
+        ),
+        actuator_model_stage="stage_b_loaded_v145_stabilized_vector_residual",
+        velocity_amplitude_knots_rad=ST3215_STEP_AMPLITUDE_KNOTS_RAD,
+        velocity_curves_rad_s=_scaled_curves(ST3215_PEAK_VELOCITY_CURVES_RAD_S, 1.06),
+        tau_median_s=_scaled(ST3215_TAU_MEDIAN_S, 0.88),
+        tau_p10_s=_scaled(ST3215_TAU_P10_S, 0.88),
+        tau_p90_s=_scaled(ST3215_TAU_P90_S, 0.88),
+        static_gain=ST3215_STATIC_GAIN_MEDIAN,
+        small_signal_error_floor_rad=ST3215_SMALL_SIGNAL_ERROR_FLOOR_RAD,
+        center_hysteresis_span_rad=ST3215_CENTER_HYSTERESIS_SPAN_RAD,
+        bus_phase_delay_s_range=ST3215_BUS_PHASE_WAIT_RANGE_S,
+        response_delay_s_range=ST3215_FIRST_ENCODER_DELAY_RANGE_S,
+        response_delay_s_nominal=ST3215_FIRST_ENCODER_DELAY_MEDIAN_S,
+        response_delay_scale=0.72,
+        velocity_scale_range=(1.00, 1.10),
+        randomize_tau=True,
+        randomize_velocity_scale=True,
+        randomize_response_delay=True,
+        randomize_bus_phase=True,
+        loaded_envelope_enabled=True,
+        loaded_dataset_name=LOADED_DATASET_NAME,
+        loaded_envelope_combination_rule=LOADED_ENVELOPE_COMBINATION_RULE,
+        loaded_crouch_direction_sign=LOADED_CROUCH_DIRECTION_SIGN,
+        loaded_crouch_low_demand_gain=LOADED_CROUCH_LOW_DEMAND_GAIN,
+        loaded_crouch_vmax_rad_s=LOADED_CROUCH_VMAX_RAD_S,
+        loaded_return_low_demand_gain=LOADED_RETURN_LOW_DEMAND_GAIN,
+        loaded_return_vmax_rad_s=LOADED_RETURN_VMAX_RAD_S,
+        loaded_direction_conditioning_weight=LOADED_DIRECTION_CONDITIONING_WEIGHT,
+        loaded_return_tau_scale=LOADED_RETURN_TAU_SCALE,
+        loaded_velocity_scale_range=(1.00, 1.10),
+        randomize_loaded_velocity_scale=True,
+    )
+
+
+@configclass
+class ST3215LoadedV145StabilizedStandEventsCfg(ST3215StandEventsCfg):
+    """Stand-v5 stabilization events with gentle external balance perturbations.
+
+    The interval push is deliberately small. It encourages both legs to participate
+    in recovery without becoming a Hardware locomotion disturbance curriculum.
+    """
+
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        params={"velocity_range": {"x": (-0.055, 0.055), "y": (-0.055, 0.055)}},
+        mode="interval",
+        interval_range_s=(5.0, 8.0),
+    )
+
+
+@configclass
+class HardwareV145StabilizedStandRewardsCfg(HardwareV145AthleticStandRewardsCfg):
+    """Stabilized Stand-v5 rewards.
+
+    Targets a moderate 0.43-0.44 m athletic stance, reduces the incentive for a
+    deep right-leg brace, and avoids knee-symmetry shaping that might be harmful
+    for later gait transfer.
+    """
+
+    stand_base_height = RewTerm(
+        func=mdp.standing_base_height_exp,
+        params={
+            "command_name": "base_velocity",
+            "desired_height": V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M,
+            "std": 0.075,
+        },
+        weight=0.95,
+    )
+    stand_default_pose = RewTerm(
+        func=mdp.standing_default_joint_pose_l2,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.05,
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=ACTIONABLE_JOINTS_V1_2_3, preserve_order=True
+            ),
+        },
+        weight=-0.90,
+    )
+    raw_action_excess_l2 = RewTerm(func=mdp.raw_action_excess_l2, params={"action_name": "joint_pos"}, weight=-0.140)
+    soft_torque_utilization = RewTerm(
+        func=mdp.soft_torque_utilization_l2,
+        params={
+            "torque_limit_nm": ST3215_PEAK_TORQUE_NM,
+            "soft_ratio": 0.68,
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=ACTIONABLE_JOINTS_V1_2_3, preserve_order=True
+            ),
+        },
+        weight=-0.026,
+    )
+    stand_sagittal_soft_torque = RewTerm(
+        func=mdp.standing_soft_torque_utilization_l2,
+        params={
+            "command_name": "base_velocity",
+            "torque_limit_nm": ST3215_PEAK_TORQUE_NM,
+            "soft_ratio": 0.62,
+            "command_threshold": 0.05,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_hip_pitch_joint", ".*_knee_pitch_joint", ".*_ankle_pitch_joint"],
+                preserve_order=True,
+            ),
+        },
+        weight=-0.045,
+    )
+    stand_contact_force_balance = RewTerm(
+        func=mdp.standing_contact_force_balance_l2,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FEET_BODY_PATTERN),
+            "command_threshold": 0.05,
+            "force_threshold": 1.0,
+        },
+        weight=-0.35,
+    )
+    stand_com_over_feet = RewTerm(
+        func=mdp.standing_com_over_feet_l2,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", body_names=FEET_BODY_PATTERN),
+            "command_threshold": 0.05,
+        },
+        weight=-1.10,
+    )
+    stand_both_feet_contact = RewTerm(
+        func=mdp.standing_both_feet_contact,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FEET_BODY_PATTERN),
+            "force_threshold": 1.0,
+        },
+        weight=0.80,
+    )
+
+
+@configclass
+class HardwareV145StabilizedGroundedStepRewardsCfg(HardwareV145GroundedStepRewardsCfg):
+    """Hardware-v5s rewards matching the stabilized standing profile."""
+
+    moving_relaxed_base_height = RewTerm(
+        func=mdp.moving_base_height_exp,
+        params={
+            "command_name": "base_velocity",
+            "desired_height": V1_4_5_STABILIZED_MOVING_BASE_COM_HEIGHT_M,
+            "std": 0.100,
+            "command_threshold": 0.12,
+        },
+        weight=0.45,
+    )
+    stand_base_height = RewTerm(
+        func=mdp.standing_base_height_exp,
+        params={
+            "command_name": "base_velocity",
+            "desired_height": V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M,
+            "std": 0.080,
+        },
+        weight=0.60,
+    )
+
+
+@configclass
+class ST3215LoadedV145StabilizedStandCurriculumsCfg(ST3215LoadedV145StandCurriculumsCfg):
+    policy_diagnostics = CurrTerm(
+        func=mdp.PolicyDiagnostics,
+        params={
+            "command_name": "base_velocity",
+            "action_name": "joint_pos",
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=ACTIONABLE_JOINTS_V1_2_3, preserve_order=True
+            ),
+            "foot_asset_cfg": SceneEntityCfg("robot", body_names=FEET_BODY_PATTERN),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FEET_BODY_PATTERN),
+            "joint_velocity_limit_rad_s": ST3215_NO_LOAD_SPEED_RAD_S,
+            "torque_limit_nm": ST3215_PEAK_TORQUE_NM,
+            "torque_soft_ratio": 0.68,
+            "desired_base_com_height_m": V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M,
+            "update_interval_steps": 25,
+            "standing_command_threshold": 0.05,
+        },
+    )
+
+
+@configclass
+class ST3215LoadedV145StabilizedHardwareCurriculumsCfg(ST3215LoadedV145HardwareCurriculumsCfg):
+    policy_diagnostics = CurrTerm(
+        func=mdp.PolicyDiagnostics,
+        params={
+            "command_name": "base_velocity",
+            "action_name": "joint_pos",
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=ACTIONABLE_JOINTS_V1_2_3, preserve_order=True
+            ),
+            "foot_asset_cfg": SceneEntityCfg("robot", body_names=FEET_BODY_PATTERN),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FEET_BODY_PATTERN),
+            "joint_velocity_limit_rad_s": ST3215_NO_LOAD_SPEED_RAD_S,
+            "torque_limit_nm": ST3215_PEAK_TORQUE_NM,
+            "torque_soft_ratio": 0.70,
+            "desired_base_com_height_m": V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M,
+            "update_interval_steps": 25,
+            "standing_command_threshold": 0.05,
+        },
+    )
+
+
+@configclass
+class LilgreenStandST3215LoadedV145StabilizedEnvCfg(V140ST3215LoadedHardwareAlignedEnvCfg):
+    """Stabilized v1.4.5 Stand task: moderate athletic stance plus anti-lean shaping."""
+
+    commands: StandCommandsCfg = StandCommandsCfg()
+    observations: StandObservationsCfg = StandObservationsCfg()
+    actions: V145ST3215LoadedAthleticStabilizedActionsCfg = V145ST3215LoadedAthleticStabilizedActionsCfg()
+    rewards: HardwareV145StabilizedStandRewardsCfg = HardwareV145StabilizedStandRewardsCfg()
+    terminations: V123TerminationsCfg = V123TerminationsCfg()
+    events: ST3215LoadedV145StabilizedStandEventsCfg = ST3215LoadedV145StabilizedStandEventsCfg()
+    curriculum: ST3215LoadedV145StabilizedStandCurriculumsCfg = ST3215LoadedV145StabilizedStandCurriculumsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_stabilized_athletic_default(self.scene.robot)
+        self.events.actuator_gains = None
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV145StabilizedEnvCfg(V140ST3215LoadedHardwareAlignedEnvCfg):
+    """Hardware task matching the stabilized v1.4.5 default/profile."""
+
+    commands: HardwareCommandsCfg = HardwareCommandsCfg()
+    observations: HardwareObservationsCfg = HardwareObservationsCfg()
+    actions: V145ST3215LoadedAthleticStabilizedActionsCfg = V145ST3215LoadedAthleticStabilizedActionsCfg()
+    rewards: HardwareV145StabilizedGroundedStepRewardsCfg = HardwareV145StabilizedGroundedStepRewardsCfg()
+    terminations: V123TerminationsCfg = V123TerminationsCfg()
+    events: ST3215HardwareEventsCfg = ST3215HardwareEventsCfg()
+    curriculum: ST3215LoadedV145StabilizedHardwareCurriculumsCfg = ST3215LoadedV145StabilizedHardwareCurriculumsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_stabilized_athletic_default(self.scene.robot)
         self.events.actuator_gains = None

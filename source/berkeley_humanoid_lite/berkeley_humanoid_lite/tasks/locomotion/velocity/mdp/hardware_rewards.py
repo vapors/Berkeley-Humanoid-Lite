@@ -164,3 +164,73 @@ def standing_feet_slide(
     body_vel_xy = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
     slip = torch.sum(torch.linalg.vector_norm(body_vel_xy, dim=-1) * contacts, dim=1)
     return slip * _standing_mask(env, command_name, command_threshold)
+
+
+
+def standing_soft_torque_utilization_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    torque_limit_nm: float,
+    soft_ratio: float = 0.70,
+    command_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Standing-only soft torque utilization penalty.
+
+    This is useful for Stand checkpoints where we want bent knees but do not want
+    a static crouch that sits continuously near the ST3215 torque envelope.
+    """
+    if torque_limit_nm <= 0.0:
+        raise ValueError("torque_limit_nm must be positive")
+    if not 0.0 <= soft_ratio < 1.0:
+        raise ValueError("soft_ratio must be in [0, 1)")
+    asset: Articulation = env.scene[asset_cfg.name]
+    torque = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids])
+    utilization = torque / torque_limit_nm
+    excess = torch.relu(utilization - soft_ratio)
+    return torch.sum(torch.square(excess), dim=1) * _standing_mask(env, command_name, command_threshold)
+
+
+def standing_contact_force_balance_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.05,
+    force_threshold: float = 1.0,
+    eps: float = 1.0e-6,
+) -> torch.Tensor:
+    """Penalize left/right support-force imbalance under standing commands.
+
+    This is a stand-only anti-lean term, not a knee-symmetry term. It discourages
+    the first v1.4.5 failure mode where the policy stood by loading one leg hard.
+    """
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0]
+    if forces.shape[1] != 2:
+        # Keep the term safe if a future foot pattern matches more bodies.
+        left = torch.sum(forces[:, 0::2], dim=1)
+        right = torch.sum(forces[:, 1::2], dim=1)
+    else:
+        left, right = forces[:, 0], forces[:, 1]
+    total = left + right
+    both_loaded = (left > force_threshold) & (right > force_threshold)
+    normalized_diff = (left - right) / (total + eps)
+    return torch.square(normalized_diff) * both_loaded * _standing_mask(env, command_name, command_threshold)
+
+
+def standing_com_over_feet_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    command_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Penalize standing COM displacement from the midpoint of the two feet.
+
+    This keeps the Stand seed from leaning onto one leg without teaching gait-time
+    knee symmetry. Use only on standing tasks.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_xy = asset.data.body_pos_w[:, asset_cfg.body_ids, :2]
+    midpoint_xy = torch.mean(foot_xy, dim=1)
+    com_xy = asset.data.root_com_pos_w[:, :2]
+    return torch.sum(torch.square(com_xy - midpoint_xy), dim=1) * _standing_mask(env, command_name, command_threshold)

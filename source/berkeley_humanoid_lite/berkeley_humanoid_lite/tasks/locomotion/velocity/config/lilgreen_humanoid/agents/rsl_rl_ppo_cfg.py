@@ -227,3 +227,27 @@ class LilgreenHardwareST3215LoadedV145PPORunnerCfg(LilgreenHardwareST3215LoadedP
     experiment_name = "lilgreen_v1_4_5_st3215_athletic"
     save_interval = 500
 
+
+
+@configclass
+class LilgreenStandST3215LoadedV145StabilizedPPORunnerCfg(LilgreenStandST3215LoadedV145PPORunnerCfg):
+    """v1.4.5 stabilized Stand PPO configuration.
+
+    Same contract generation as v5, but a separate experiment root prevents
+    mixing the first deep-athletic Stand-v5 checkpoints with stabilized runs.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized"
+    save_interval = 500
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV145StabilizedPPORunnerCfg(LilgreenHardwareST3215LoadedV145PPORunnerCfg):
+    """v1.4.5 stabilized Hardware PPO configuration.
+
+    Resume this from Velocity-Lilgreen-Stand-ST3215-Loaded-v5s, not the first
+    v5 deep-athletic Stand run.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized"
+    save_interval = 500

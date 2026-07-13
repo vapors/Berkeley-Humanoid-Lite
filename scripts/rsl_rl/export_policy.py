@@ -308,6 +308,15 @@ def _build_deploy_config(
             for default, upper, scale in zip(action_defaults, physical_upper, residual_scale)
         ]
 
+        training_stage_for_profile = str(getattr(action_cfg, "actuator_model_stage", ""))
+        if action_contract_version == 4:
+            if "stabilized" in training_stage_for_profile:
+                deployment_contract_profile = "v1_4_5_stabilized_vector_residual"
+            else:
+                deployment_contract_profile = "v1_4_5_athletic_vector_residual"
+        else:
+            deployment_contract_profile = "v1_2_3_scalar_residual"
+
         action_metadata = {
             "action_contract_version": action_contract_version,
             "action_contract_name": action_contract_name,
@@ -325,7 +334,7 @@ def _build_deploy_config(
             "deployment_requires_action_contract_transform": True,
             "deployment_requires_action_contract_v3_transform": action_contract_version == 3,
             "deployment_requires_action_contract_v4_transform": action_contract_version == 4,
-            "deployment_contract_profile": "v1_4_5_athletic_vector_residual" if action_contract_version == 4 else "v1_2_3_scalar_residual",
+            "deployment_contract_profile": deployment_contract_profile,
         }
         if hasattr(action_cfg, "actuator_model_name"):
             action_metadata.update({
