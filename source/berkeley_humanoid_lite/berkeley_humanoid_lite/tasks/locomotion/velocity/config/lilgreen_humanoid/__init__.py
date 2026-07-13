@@ -9,6 +9,8 @@ from . import (
     env_cfg_hardware_st3215_loaded_v141,
     env_cfg_hardware_st3215_loaded_v142,
     env_cfg_hardware_st3215_loaded_v143,
+    env_cfg_hardware_st3215_loaded_v144,
+    env_cfg_hardware_st3215_loaded_v145,
     env_cfg_stand,
     env_cfg_stand_st3215,
     env_cfg_stand_st3215_loaded,
@@ -135,3 +137,39 @@ gym.register(
         "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV143PPORunnerCfg,
     },
 )
+
+# v1.4.4 alternating-step loaded-actuator Hardware curriculum. This is additive so
+# v1.4.0/v1.4.1/v1.4.2/v1.4.3 Hardware tasks remain reproducible.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v144.LilgreenHardwareST3215LoadedV144EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV144PPORunnerCfg,
+    },
+)
+# v1.4.5 athletic Stand task. This is a new q_default/vector-residual profile,
+# intended to be trained fresh before Hardware-v5.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-Loaded-v5",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenStandST3215LoadedV145EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215LoadedV145PPORunnerCfg,
+    },
+)
+
+# v1.4.5 athletic Hardware curriculum. Uses the same v1.4.5 q_default/vector
+# residual profile as Stand-v5, with grounded alternating-step rewards.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v5",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV145EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV145PPORunnerCfg,
+    },
+)
+

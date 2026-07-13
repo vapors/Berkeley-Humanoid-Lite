@@ -140,6 +140,11 @@ class PolicyDiagnostics(ManagerTermBase):
         current_air_time = sensor.data.current_air_time[:, sensor_cfg.body_ids]
         air_fraction_per_foot = torch.mean((current_air_time > 0.0).float(), dim=0)
         max_air_time = torch.max(current_air_time, dim=1)[0]
+        if current_air_time.shape[1] > 1:
+            air_time_imbalance = torch.abs(current_air_time[:, 0] - current_air_time[:, 1])
+        else:
+            air_time_imbalance = torch.zeros_like(max_air_time)
+        long_air_time = max_air_time > 0.28
         foot_z = asset.data.body_pos_w[:, foot_asset_cfg.body_ids, 2]
         stance_z = torch.sum(foot_z * foot_contact.float(), dim=1) / torch.clamp(
             torch.sum(foot_contact.float(), dim=1), min=1.0
@@ -223,6 +228,8 @@ class PolicyDiagnostics(ManagerTermBase):
             "foot_air_fraction_left": air_fraction_per_foot[0],
             "foot_air_fraction_right": air_fraction_per_foot[1] if air_fraction_per_foot.numel() > 1 else air_fraction_per_foot[0],
             "moving_max_air_time_mean_s": torch.sum(max_air_time * moving.float()) / moving_count,
+            "moving_air_time_imbalance_mean_s": torch.sum(air_time_imbalance * moving.float()) / moving_count,
+            "moving_long_air_time_fraction": torch.sum((long_air_time & moving).float()) / moving_count,
             "moving_swing_clearance_mean_m": torch.sum(max_swing_clearance * moving.float()) / moving_count,
             "moving_swing_clearance_pseudo_max_m": torch.max(max_swing_clearance * moving.float()),
             "moving_swing_foot_forward_velocity_mean_mps": torch.sum(swing_forward_velocity * moving.float()) / moving_count,

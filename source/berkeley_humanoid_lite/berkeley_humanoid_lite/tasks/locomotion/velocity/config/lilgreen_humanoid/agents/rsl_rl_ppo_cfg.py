@@ -191,3 +191,39 @@ class LilgreenHardwareST3215LoadedV143PPORunnerCfg(LilgreenHardwareST3215LoadedP
     experiment_name = "lilgreen_v1_4_0_st3215_loaded"
     save_interval = 500
 
+@configclass
+class LilgreenHardwareST3215LoadedV144PPORunnerCfg(LilgreenHardwareST3215LoadedPPORunnerCfg):
+    """v1.4.4 alternating-step Hardware curriculum PPO configuration.
+
+    The experiment root intentionally remains ``lilgreen_v1_4_0_st3215_loaded`` so
+    the successful v1.4.0 Stand model_5000.pt can be loaded without moving
+    checkpoints. Use a v144-specific run_name to keep runs easy to inspect.
+    """
+
+    experiment_name = "lilgreen_v1_4_0_st3215_loaded"
+    save_interval = 500
+
+@configclass
+class LilgreenStandST3215LoadedV145PPORunnerCfg(LilgreenStandST3215LoadedPPORunnerCfg):
+    """v1.4.5 athletic Stand PPO configuration.
+
+    The experiment root changes because the q_default/residual-scale profile is
+    deployment-impacting and should not be mixed with v1.4.0 scalar-residual
+    checkpoints.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_athletic"
+    save_interval = 500
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV145PPORunnerCfg(LilgreenHardwareST3215LoadedPPORunnerCfg):
+    """v1.4.5 athletic Hardware PPO configuration.
+
+    Resume this from a v1.4.5 Stand-v5 checkpoint, not from the old v1.4.0
+    Stand model_5000, because q_default and residual scales are different.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_athletic"
+    save_interval = 500
+

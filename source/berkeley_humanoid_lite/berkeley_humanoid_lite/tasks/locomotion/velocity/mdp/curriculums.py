@@ -486,3 +486,164 @@ def st3215_loaded_v143_hardware_stage_curriculum(
         "curriculum_profile_id": 143.0,
     }
 
+
+def st3215_loaded_v144_hardware_stage_curriculum(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    stage_step_boundaries: tuple[int, int, int] = (32000, 128000, 256000),
+    standing_fractions: tuple[float, float, float, float] = (0.40, 0.30, 0.25, 0.20),
+    lin_vel_x_ranges: tuple[tuple[float, float], ...] = ((-0.28, 0.28), (-0.50, 0.50), (-0.70, 0.70), (-0.90, 0.90)),
+    lin_vel_y_ranges: tuple[tuple[float, float], ...] = ((-0.08, 0.08), (-0.16, 0.16), (-0.26, 0.26), (-0.36, 0.36)),
+    ang_vel_z_ranges: tuple[tuple[float, float], ...] = ((-0.22, 0.22), (-0.45, 0.45), (-0.70, 0.70), (-0.95, 0.95)),
+    root_velocity_ranges: tuple[float, float, float, float] = (0.035, 0.07, 0.12, 0.18),
+    joint_reset_offsets: tuple[float, float, float, float] = (0.012, 0.022, 0.035, 0.050),
+    push_xy_ranges: tuple[float, float, float, float] = (0.0, 0.0, 0.02, 0.05),
+    mass_scale_ranges: tuple[tuple[float, float], ...] = ((0.98, 1.02), (0.96, 1.04), (0.94, 1.06), (0.93, 1.07)),
+) -> dict[str, torch.Tensor | float]:
+    """v1.4.4 alternating-step loaded-ST3215 Hardware curriculum.
+
+    This keeps continuous velocity commands and avoids command bins. Compared with
+    v1.4.3, it keeps similar locomotion pressure but relies on gait-quality rewards
+    to favor alternating, command-aligned stepping over one-foot lift/bracing.
+    Reset/push disturbances remain gentle so failures primarily reflect gait
+    learning, not disturbance survival.
+    """
+    del env_ids
+    step = int(env.common_step_counter)
+    b0, b1, b2 = stage_step_boundaries
+    stage = 0 if step < b0 else 1 if step < b1 else 2 if step < b2 else 3
+
+    previous_stage = getattr(env, "_bhl_v144_st3215_loaded_hardware_stage", None)
+    if previous_stage != stage:
+        command_term = env.command_manager.get_term("base_velocity")
+        command_term.cfg.rel_standing_envs = standing_fractions[stage]
+        command_term.cfg.ranges.lin_vel_x = lin_vel_x_ranges[stage]
+        command_term.cfg.ranges.lin_vel_y = lin_vel_y_ranges[stage]
+        command_term.cfg.ranges.ang_vel_z = ang_vel_z_ranges[stage]
+
+        reset_base_cfg = env.event_manager.get_term_cfg("reset_base")
+        root_vel = root_velocity_ranges[stage]
+        reset_base_cfg.params["velocity_range"] = {
+            "x": (-root_vel, root_vel),
+            "y": (-root_vel, root_vel),
+            "z": (0.0, 0.0),
+            "roll": (-root_vel, root_vel),
+            "pitch": (-root_vel, root_vel),
+            "yaw": (-root_vel, root_vel),
+        }
+        env.event_manager.set_term_cfg("reset_base", reset_base_cfg)
+
+        reset_joint_cfg = env.event_manager.get_term_cfg("reset_robot_joints")
+        offset = joint_reset_offsets[stage]
+        reset_joint_cfg.params["position_range"] = (-offset, offset)
+        env.event_manager.set_term_cfg("reset_robot_joints", reset_joint_cfg)
+
+        mass_cfg = env.event_manager.get_term_cfg("base_mass")
+        mass_cfg.params["mass_distribution_params"] = mass_scale_ranges[stage]
+        env.event_manager.set_term_cfg("base_mass", mass_cfg)
+
+        push_cfg = env.event_manager.get_term_cfg("push_robot")
+        push = push_xy_ranges[stage]
+        push_cfg.params["velocity_range"] = {"x": (-push, push), "y": (-push, push)}
+        env.event_manager.set_term_cfg("push_robot", push_cfg)
+
+        command_term.time_left[:] = 0.0
+        env._bhl_v144_st3215_loaded_hardware_stage = stage
+
+    action_term = env.action_manager.get_term("joint_pos")
+    return {
+        "stage": float(stage),
+        "standing_fraction": float(standing_fractions[stage]),
+        "cmd_x_abs_max": float(max(abs(v) for v in lin_vel_x_ranges[stage])),
+        "cmd_y_abs_max": float(max(abs(v) for v in lin_vel_y_ranges[stage])),
+        "cmd_yaw_abs_max": float(max(abs(v) for v in ang_vel_z_ranges[stage])),
+        "root_reset_velocity_abs_max": float(root_velocity_ranges[stage]),
+        "joint_reset_offset_abs_max": float(joint_reset_offsets[stage]),
+        "push_xy_abs_max": float(push_xy_ranges[stage]),
+        "mass_scale_min": float(mass_scale_ranges[stage][0]),
+        "mass_scale_max": float(mass_scale_ranges[stage][1]),
+        "actuator_delay_mean_ms": float(torch.mean(action_term.sampled_total_delay_s).item() * 1000.0),
+        "actuator_tau_mean_ms": float(torch.mean(action_term.sampled_tau_s).item() * 1000.0),
+        "actuator_velocity_scale_mean": float(torch.mean(action_term.sampled_velocity_scale).item()),
+        "curriculum_profile_id": 144.0,
+    }
+
+def st3215_loaded_v145_hardware_stage_curriculum(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    stage_step_boundaries: tuple[int, int, int] = (32000, 128000, 256000),
+    standing_fractions: tuple[float, float, float, float] = (0.35, 0.28, 0.22, 0.18),
+    lin_vel_x_ranges: tuple[tuple[float, float], ...] = ((-0.30, 0.30), (-0.55, 0.55), (-0.75, 0.75), (-0.95, 0.95)),
+    lin_vel_y_ranges: tuple[tuple[float, float], ...] = ((-0.08, 0.08), (-0.17, 0.17), (-0.28, 0.28), (-0.38, 0.38)),
+    ang_vel_z_ranges: tuple[tuple[float, float], ...] = ((-0.22, 0.22), (-0.45, 0.45), (-0.70, 0.70), (-0.95, 0.95)),
+    root_velocity_ranges: tuple[float, float, float, float] = (0.030, 0.060, 0.100, 0.150),
+    joint_reset_offsets: tuple[float, float, float, float] = (0.012, 0.022, 0.035, 0.050),
+    push_xy_ranges: tuple[float, float, float, float] = (0.0, 0.0, 0.02, 0.05),
+    mass_scale_ranges: tuple[tuple[float, float], ...] = ((0.98, 1.02), (0.96, 1.04), (0.94, 1.06), (0.93, 1.07)),
+) -> dict[str, torch.Tensor | float]:
+    """v1.4.5 athletic loaded-ST3215 Hardware curriculum.
+
+    Continuous commands only: no command bins. The curriculum keeps v1.4.4's
+    locomotion pressure but uses the lower athletic q_default/vector residual and
+    grounded-step rewards to favor knee-bent, command-aligned walking over hopping.
+    """
+    del env_ids
+    step = int(env.common_step_counter)
+    b0, b1, b2 = stage_step_boundaries
+    stage = 0 if step < b0 else 1 if step < b1 else 2 if step < b2 else 3
+
+    previous_stage = getattr(env, "_bhl_v145_st3215_loaded_hardware_stage", None)
+    if previous_stage != stage:
+        command_term = env.command_manager.get_term("base_velocity")
+        command_term.cfg.rel_standing_envs = standing_fractions[stage]
+        command_term.cfg.ranges.lin_vel_x = lin_vel_x_ranges[stage]
+        command_term.cfg.ranges.lin_vel_y = lin_vel_y_ranges[stage]
+        command_term.cfg.ranges.ang_vel_z = ang_vel_z_ranges[stage]
+
+        reset_base_cfg = env.event_manager.get_term_cfg("reset_base")
+        root_vel = root_velocity_ranges[stage]
+        reset_base_cfg.params["velocity_range"] = {
+            "x": (-root_vel, root_vel),
+            "y": (-root_vel, root_vel),
+            "z": (0.0, 0.0),
+            "roll": (-root_vel, root_vel),
+            "pitch": (-root_vel, root_vel),
+            "yaw": (-root_vel, root_vel),
+        }
+        env.event_manager.set_term_cfg("reset_base", reset_base_cfg)
+
+        reset_joint_cfg = env.event_manager.get_term_cfg("reset_robot_joints")
+        offset = joint_reset_offsets[stage]
+        reset_joint_cfg.params["position_range"] = (-offset, offset)
+        env.event_manager.set_term_cfg("reset_robot_joints", reset_joint_cfg)
+
+        mass_cfg = env.event_manager.get_term_cfg("base_mass")
+        mass_cfg.params["mass_distribution_params"] = mass_scale_ranges[stage]
+        env.event_manager.set_term_cfg("base_mass", mass_cfg)
+
+        push_cfg = env.event_manager.get_term_cfg("push_robot")
+        push = push_xy_ranges[stage]
+        push_cfg.params["velocity_range"] = {"x": (-push, push), "y": (-push, push)}
+        env.event_manager.set_term_cfg("push_robot", push_cfg)
+
+        command_term.time_left[:] = 0.0
+        env._bhl_v145_st3215_loaded_hardware_stage = stage
+
+    action_term = env.action_manager.get_term("joint_pos")
+    return {
+        "stage": float(stage),
+        "standing_fraction": float(standing_fractions[stage]),
+        "cmd_x_abs_max": float(max(abs(v) for v in lin_vel_x_ranges[stage])),
+        "cmd_y_abs_max": float(max(abs(v) for v in lin_vel_y_ranges[stage])),
+        "cmd_yaw_abs_max": float(max(abs(v) for v in ang_vel_z_ranges[stage])),
+        "root_reset_velocity_abs_max": float(root_velocity_ranges[stage]),
+        "joint_reset_offset_abs_max": float(joint_reset_offsets[stage]),
+        "push_xy_abs_max": float(push_xy_ranges[stage]),
+        "mass_scale_min": float(mass_scale_ranges[stage][0]),
+        "mass_scale_max": float(mass_scale_ranges[stage][1]),
+        "actuator_delay_mean_ms": float(torch.mean(action_term.sampled_total_delay_s).item() * 1000.0),
+        "actuator_tau_mean_ms": float(torch.mean(action_term.sampled_tau_s).item() * 1000.0),
+        "actuator_velocity_scale_mean": float(torch.mean(action_term.sampled_velocity_scale).item()),
+        "curriculum_profile_id": 145.0,
+    }
+

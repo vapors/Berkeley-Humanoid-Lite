@@ -284,6 +284,18 @@ def _build_deploy_config(
                 "Residual action scale metadata length does not match action dimension: "
                 f"scale={len(residual_scale)}, actions={len(action_indices)}"
             )
+        nonuniform_residual_scale = (max(residual_scale) - min(residual_scale)) > 1.0e-9
+        action_contract_version = 4 if nonuniform_residual_scale else 3
+        action_contract_name = (
+            "bounded_default_centered_vector_residual_athletic"
+            if action_contract_version == 4
+            else "bounded_default_centered_symmetric_residual"
+        )
+        action_transform = (
+            "bounded_default_centered_vector_residual"
+            if action_contract_version == 4
+            else "bounded_default_centered_symmetric_residual"
+        )
 
         physical_lower = [float(value) for value in _safe_to_list(action_cfg.lower_limits)]
         physical_upper = [float(value) for value in _safe_to_list(action_cfg.upper_limits)]
@@ -297,9 +309,9 @@ def _build_deploy_config(
         ]
 
         action_metadata = {
-            "action_contract_version": 3,
-            "action_contract_name": "bounded_default_centered_symmetric_residual",
-            "action_transform": "bounded_default_centered_symmetric_residual",
+            "action_contract_version": action_contract_version,
+            "action_contract_name": action_contract_name,
+            "action_transform": action_transform,
             "action_equation": "q_target = clip(q_default + clip(a_raw,-1,1) * residual_scale_rad, physical_lower, physical_upper)",
             "action_limit_lower": -1.0,
             "action_limit_upper": 1.0,
@@ -311,7 +323,9 @@ def _build_deploy_config(
             "action_default_rad": action_defaults,
             "previous_action_observation": "bounded_normalized_action",
             "deployment_requires_action_contract_transform": True,
-            "deployment_requires_action_contract_v3_transform": True,
+            "deployment_requires_action_contract_v3_transform": action_contract_version == 3,
+            "deployment_requires_action_contract_v4_transform": action_contract_version == 4,
+            "deployment_contract_profile": "v1_4_5_athletic_vector_residual" if action_contract_version == 4 else "v1_2_3_scalar_residual",
         }
         if hasattr(action_cfg, "actuator_model_name"):
             action_metadata.update({

@@ -250,6 +250,142 @@ def swing_foot_velocity_along_command(
     return reward * (command_norm > command_threshold)
 
 
+
+def moving_base_height_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    desired_height: float,
+    std: float = 0.08,
+    command_threshold: float = 0.12,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward a relaxed root-body COM height only while commanded to move.
+
+    This lets Hardware locomotion use a slightly lower, knee-bent stance than the
+    nominal standing pose without changing the standing baseline target.
+    """
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    moving = torch.linalg.vector_norm(command, dim=1) > command_threshold
+    error = asset.data.root_com_pos_w[:, 2] - desired_height
+    return torch.exp(-0.5 * torch.square(error / std)) * moving
+
+
+def moving_foot_air_time_balance_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    max_unpenalized_s: float = 0.12,
+) -> torch.Tensor:
+    """Penalize persistent left/right air-time imbalance during movement.
+
+    v1.4.3 proved that rewarding lift alone can be exploited by holding one foot
+    airborne while bracing on the other. This term is intentionally soft: normal
+    swing-phase asymmetry under ``max_unpenalized_s`` is free, but long one-sided
+    air-time accumulation becomes expensive.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    if air_time.shape[1] < 2:
+        return torch.zeros(air_time.shape[0], device=air_time.device)
+    imbalance = torch.abs(air_time[:, 0] - air_time[:, 1])
+    return torch.relu(imbalance - max_unpenalized_s) * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_long_single_support_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    max_air_time_s: float = 0.28,
+) -> torch.Tensor:
+    """Penalize holding one foot in the air too long under movement commands."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+    max_air_time = torch.max(air_time, dim=1)[0]
+    penalty = torch.relu(max_air_time - max_air_time_s)
+    return penalty * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_stance_foot_slide_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize sliding the stance foot during single support.
+
+    This pushes the policy away from the v1.4.3 one-foot-brace exploit and toward
+    planting a stable stance foot while the swing foot moves with the command.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > force_threshold
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+    asset = env.scene[asset_cfg.name]
+    foot_vel_xy = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
+    stance_speed = torch.sum(torch.linalg.vector_norm(foot_vel_xy, dim=-1) * in_contact.float(), dim=1)
+    return stance_speed * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_alternating_single_support_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward recent left/right alternation in single-support contact state.
+
+    The contact sensor history is short, so this is deliberately local: it rewards
+    recent transitions between left-stance/right-swing and right-stance/left-swing.
+    It does not introduce command bins or a gait phase oscillator.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    contacts = forces.norm(dim=-1) > force_threshold  # [N, T, feet]
+    if contacts.shape[2] < 2 or contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    # code 1 = left stance only, 2 = right stance only, 3 = double support, 0 = no support
+    codes = contacts[:, :, 0].int() + 2 * contacts[:, :, 1].int()
+    prev_codes = codes[:, :-1]
+    next_codes = codes[:, 1:]
+    direct_alternation = ((prev_codes == 1) & (next_codes == 2)) | ((prev_codes == 2) & (next_codes == 1))
+    # Also reward entering either single-support state from double support to avoid over-penalizing early step discovery.
+    enter_single = ((prev_codes == 3) & ((next_codes == 1) | (next_codes == 2)))
+    reward = torch.sum(direct_alternation.float(), dim=1) + 0.25 * torch.sum(enter_single.float(), dim=1)
+    return reward * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_contact_switch_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Small reward for contact transitions under motion commands.
+
+    This helps the policy leave static bracing, but it is paired with alternation,
+    air-balance, long-hold, and stance-slide terms so it does not simply reward
+    jittering one foot.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    contacts = forces.norm(dim=-1) > force_threshold
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    changed = contacts[:, 1:, :] != contacts[:, :-1, :]
+    reward = torch.sum(changed.float(), dim=(1, 2))
+    return reward * _moving_command_mask(env, command_name, command_threshold)
+
+
 #==========================#============================
 #
 #               ADDITIONAL REWARDS TEST   
@@ -487,3 +623,123 @@ def encourage_foot_alternation(
 
     total_reward = (alternation_score - stall_penalty) * cmd_scaling
     return total_reward.clamp(max=max_reward)
+
+def moving_no_support_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize flight/hopping under clear movement commands.
+
+    v1.4.4 discovered alternation but allowed a high no-support fraction. A
+    walking gait should pass through single support while keeping at least one
+    foot grounded.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > force_threshold
+    no_support = torch.sum(in_contact.int(), dim=1) == 0
+    return no_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_swing_clearance_window_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.12,
+    max_clearance_m: float = 0.060,
+) -> torch.Tensor:
+    """Penalize excessive swing height so alternation becomes step-like, not hopping."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+
+    asset = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    stance_z = torch.sum(foot_z * in_contact.float(), dim=1) / torch.clamp(
+        torch.sum(in_contact.float(), dim=1), min=1.0
+    )
+    swing_clearance = torch.relu(foot_z - stance_z.unsqueeze(-1))
+    swing_clearance = torch.where(~in_contact, swing_clearance, torch.zeros_like(swing_clearance))
+    max_clearance = torch.max(swing_clearance, dim=1)[0]
+    penalty = torch.square(torch.relu(max_clearance - max_clearance_m))
+    return penalty * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_knee_flexion_band_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    command_threshold: float = 0.12,
+    lower_rad: float = 0.55,
+    upper_rad: float = 1.15,
+    std: float = 0.20,
+) -> torch.Tensor:
+    """Reward a mild athletic knee-flexion band while moving.
+
+    This is intentionally bounded: it gives the policy permission to bend the
+    knees for balance and stepping, without paying it to collapse into a deep squat.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    below = torch.relu(lower_rad - q)
+    above = torch.relu(q - upper_rad)
+    band_error = torch.sum(torch.square(below + above), dim=1)
+    reward = torch.exp(-0.5 * band_error / (std * std))
+    return reward * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_com_over_stance_foot_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.12,
+    force_threshold: float = 1.0,
+    std: float = 0.14,
+) -> torch.Tensor:
+    """Reward shifting the COM over the planted/balance foot during single support.
+
+    This addresses the real-robot observation that the policy tries to balance
+    without committing its center of mass over the stance foot. It is command-
+    agnostic, so it works for forward/reverse/strafe/diagonal movement.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > force_threshold
+    single_support = torch.sum(in_contact.int(), dim=1) == 1
+
+    asset = env.scene[asset_cfg.name]
+    foot_xy = asset.data.body_pos_w[:, asset_cfg.body_ids, :2]
+    stance_xy = torch.sum(foot_xy * in_contact.float().unsqueeze(-1), dim=1) / torch.clamp(
+        torch.sum(in_contact.float(), dim=1, keepdim=True), min=1.0
+    )
+    com_xy = asset.data.root_com_pos_w[:, :2]
+    distance = torch.linalg.vector_norm(com_xy - stance_xy, dim=1)
+    reward = torch.exp(-0.5 * torch.square(distance / std))
+    return reward * single_support * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_soft_torque_utilization_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    torque_limit_nm: float,
+    soft_ratio: float = 0.70,
+    command_threshold: float = 0.12,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Soft torque utilization only while moving, for targeted joint-health shaping."""
+    if torque_limit_nm <= 0.0:
+        raise ValueError("torque_limit_nm must be positive")
+    if not 0.0 <= soft_ratio < 1.0:
+        raise ValueError("soft_ratio must be in [0, 1)")
+    asset: Articulation = env.scene[asset_cfg.name]
+    torque = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids])
+    utilization = torque / torque_limit_nm
+    excess = torch.relu(utilization - soft_ratio)
+    return torch.sum(torch.square(excess), dim=1) * _moving_command_mask(env, command_name, command_threshold)
+

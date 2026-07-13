@@ -166,4 +166,80 @@ def validate_contract() -> None:
             )
 
 
+# v1.4.5 athletic q_default + vector residual profile.
+# This keeps the 45-D observation / 12-D action I/O and the residual equation,
+# but it is intentionally deployment-impacting: exported policies should be
+# treated as a new contract profile because q_default and the residual authority
+# are no longer the old scalar +/-0.20 rad standing pose.
+TRAINING_DEFAULT_RAD_V1_4_5_ATHLETIC = [
+    0.0,
+    0.0,
+    -0.30,
+    0.78,
+    -0.30,
+    0.0,
+    0.0,
+    0.0,
+    -0.30,
+    0.78,
+    -0.30,
+    0.0,
+]
+
+# More authority for sagittal walking joints, while roll/yaw axes remain
+# conservative. Order matches ACTIONABLE_JOINTS_V1_2_3.
+RESIDUAL_ACTION_SCALE_RAD_V1_4_5_ATHLETIC = [
+    0.24,
+    0.16,
+    0.42,
+    0.58,
+    0.48,
+    0.26,
+    0.24,
+    0.16,
+    0.42,
+    0.58,
+    0.48,
+    0.26,
+]
+
+# Height targets for the athletic profile. The old q_default geometry was about
+# 0.4899 m, but real/learned behavior showed the robot was too tall and
+# ankle-dominant. These values intentionally create a lower, knee-friendly stance.
+V1_4_5_ATHLETIC_STAND_BASE_COM_HEIGHT_M = NOMINAL_QDEFAULT_BASE_COM_HEIGHT_M - 0.045
+V1_4_5_ATHLETIC_MOVING_BASE_COM_HEIGHT_M = NOMINAL_QDEFAULT_BASE_COM_HEIGHT_M - 0.080
+
+
+def validate_v1_4_5_athletic_contract() -> None:
+    """Validate the v1.4.5 athletic q_default and vector residual profile."""
+    n = len(ACTIONABLE_JOINTS_V1_2_3)
+    if len(TRAINING_DEFAULT_RAD_V1_4_5_ATHLETIC) != n:
+        raise ValueError("v1.4.5 athletic q_default length mismatch")
+    if len(RESIDUAL_ACTION_SCALE_RAD_V1_4_5_ATHLETIC) != n:
+        raise ValueError("v1.4.5 residual scale length mismatch")
+    for name, default, scale, lower, upper in zip(
+        ACTIONABLE_JOINTS_V1_2_3,
+        TRAINING_DEFAULT_RAD_V1_4_5_ATHLETIC,
+        RESIDUAL_ACTION_SCALE_RAD_V1_4_5_ATHLETIC,
+        HARDWARE_LOWER_LIMIT_RAD,
+        HARDWARE_UPPER_LIMIT_RAD,
+    ):
+        if scale <= 0.0:
+            raise ValueError(f"v1.4.5 residual scale for {name} must be positive")
+        if not lower <= default <= upper:
+            raise ValueError(
+                f"v1.4.5 athletic default for {name} ({default}) is outside [{lower}, {upper}]"
+            )
+
+
+def athletic_default_joint_pos_dict(include_toes: bool = True) -> dict[str, float]:
+    """Return v1.4.5 athletic q_default keyed by joint name."""
+    values = dict(zip(ACTIONABLE_JOINTS_V1_2_3, TRAINING_DEFAULT_RAD_V1_4_5_ATHLETIC))
+    if include_toes:
+        values["leg_left_toe_pitch_joint"] = 0.0
+        values["leg_right_toe_pitch_joint"] = 0.0
+    return values
+
+
 validate_contract()
+validate_v1_4_5_athletic_contract()
