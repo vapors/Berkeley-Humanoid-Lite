@@ -13,8 +13,8 @@ Outputs by default:
     logs/rsl_rl/<experiment>/<run>/exported/policy.pt
     logs/rsl_rl/<experiment>/<run>/exported/policy.yaml
     configs/policy_latest.yaml
-    ~/berkeley_ros2_ws/src/berkeley_biped_pkg/src/configs/policy_latest.yaml
-    ~/berkeley_ros2_ws/src/berkeley_biped_pkg/src/configs/policy.onnx
+    ~/littlegreen_ros2_ws/src/berkeley_biped_pkg/src/configs/policy_latest.yaml
+    ~/littlegreen_ros2_ws/src/berkeley_biped_pkg/src/configs/policy.onnx
 """
 
 from __future__ import annotations
@@ -61,11 +61,11 @@ parser.add_argument(
 parser.add_argument(
     "--ros2_deploy_dir",
     type=str,
-    default=str(Path.home() / "berkeley_ros2_ws" / "src" / "berkeley_biped_pkg" / "src" / "configs"),
+    default=str(Path.home() / "littlegreen_ros2_ws" / "src" / "berkeley_biped_pkg" / "src" / "configs"),
     help=(
         "Directory that receives an atomic deployment pair: policy_latest.yaml + policy ONNX. "
         "Use an empty string to disable. Default: "
-        "~/berkeley_ros2_ws/src/berkeley_biped_pkg/src/configs"
+        "~/littlegreen_ros2_ws/src/berkeley_biped_pkg/src/configs"
     ),
 )
 
