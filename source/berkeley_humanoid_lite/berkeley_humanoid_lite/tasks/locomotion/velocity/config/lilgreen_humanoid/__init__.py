@@ -198,3 +198,94 @@ gym.register(
         "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV145StabilizedPPORunnerCfg,
     },
 )
+
+# v1.4.5s2 Stand forward-COM stabilization branch. Same contract v4/vector
+# residual family and q_default as v5s, but with 0.45 m height, a 5.5 cm
+# forward COM-over-feet band, and a weak forward-lean cue.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-Loaded-v5s2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenStandST3215LoadedV145StabilizedForwardEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215LoadedV145StabilizedForwardPPORunnerCfg,
+    },
+)
+
+# Matching Hardware task for the v5s2 forward-COM Stand seed.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v5s2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV145StabilizedForwardEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV145StabilizedForwardPPORunnerCfg,
+    },
+)
+
+
+# v1.4.5s3 Stand forward-COM/height refinement branch. Same contract v4/vector
+# residual family and q_default as v5s2, but with 0.460 m height, a 7 cm
+# forward COM-over-feet band, and a slightly stronger forward-lean cue.
+gym.register(
+    id="Velocity-Lilgreen-Stand-ST3215-Loaded-v5s3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenStandST3215LoadedV145StabilizedForward2EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenStandST3215LoadedV145StabilizedForward2PPORunnerCfg,
+    },
+)
+
+# Matching Hardware task for the v5s3 taller forward-COM Stand seed.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v5s3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV145StabilizedForward2EnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV145StabilizedForward2PPORunnerCfg,
+    },
+)
+
+# v1.4.6 anti-planted locomotion. Same v5s3 contract/profile and stand seed,
+# but the Hardware objective now makes planted no-progress under moving commands
+# terminate early and trains with a non-standing command floor.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v6",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV146AntiPlantedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV146AntiPlantedPPORunnerCfg,
+    },
+)
+
+
+
+# v1.4.7 phase-guided alternating gait scaffold.  This is a deliberate
+# observation-contract change: v4/vector residual actions plus a 2-D gait phase
+# observation for 47-D policy input.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v7",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV147PhaseGuidedEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV147PhaseGuidedPPORunnerCfg,
+    },
+)
+
+
+# v1.4.8 phase-lift step refinement.  Observation contract is unchanged from
+# v1.4.7: 47-D with gait phase.  Rewards now require explicit swing clearance,
+# commanded-direction foot placement, anti-rocking, and yaw stability.
+gym.register(
+    id="Velocity-Lilgreen-Hardware-ST3215-Loaded-v8",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_hardware_st3215_loaded_v145.LilgreenHardwareST3215LoadedV148PhaseLiftStepEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.LilgreenHardwareST3215LoadedV148PhaseLiftStepPPORunnerCfg,
+    },
+)

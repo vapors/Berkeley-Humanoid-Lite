@@ -28,6 +28,18 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument(
+    "--policy_only_warm_start",
+    action="store_true",
+    default=False,
+    help="Load actor/action-std and observation normalization from the resume checkpoint, but reset critic/optimizer.",
+)
+parser.add_argument(
+    "--resume_log_root",
+    type=str,
+    default=None,
+    help="Optional logs/rsl_rl/<experiment> root to search for --load_run when warm-starting from another task family.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -96,6 +108,210 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
+
+
+
+def _candidate_state_dict(obj):
+    """Return an object's state_dict if it behaves like a torch module."""
+    if obj is None or not hasattr(obj, "state_dict"):
+        return None
+    try:
+        state = obj.state_dict()
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _score_policy_module_candidate(obj, model_state):
+    """Score likely RSL-RL ActorCritic modules across RSL-RL versions.
+
+    Isaac Lab / RSL-RL versions differ in where the policy module is stored:
+    runner.alg.actor_critic, runner.alg.policy, runner.alg.ac, or sometimes a
+    private attribute.  We identify the correct module by its state_dict shape
+    rather than relying on a single attribute name.
+    """
+    current = _candidate_state_dict(obj)
+    if current is None:
+        return -1
+    score = 0
+    actor_score = 0
+    for key, value in model_state.items():
+        if key not in current or not hasattr(value, "shape") or not hasattr(current[key], "shape"):
+            continue
+        if tuple(current[key].shape) != tuple(value.shape):
+            continue
+        score += 1
+        if key == "std" or key.startswith("actor") or ".actor" in key:
+            actor_score += 1
+    if actor_score == 0:
+        return -1
+    return score + 100 * actor_score
+
+
+def _find_actor_critic_module(runner, model_state):
+    """Locate the ActorCritic-like policy module robustly across RSL-RL versions."""
+    alg = getattr(runner, "alg", None) or getattr(runner, "algo", None)
+    candidate_roots = [
+        ("runner", runner),
+        ("runner.alg", alg),
+    ]
+    preferred_names = (
+        "actor_critic",
+        "actor_critic_module",
+        "policy",
+        "ac",
+        "model",
+        "module",
+        "_actor_critic",
+        "_policy",
+    )
+
+    scored = []
+    seen = set()
+
+    def add_candidate(name, obj):
+        if obj is None or id(obj) in seen:
+            return
+        seen.add(id(obj))
+        score = _score_policy_module_candidate(obj, model_state)
+        if score >= 0:
+            scored.append((score, name, obj))
+
+    for root_name, root in candidate_roots:
+        if root is None:
+            continue
+        for attr in preferred_names:
+            add_candidate(f"{root_name}.{attr}", getattr(root, attr, None))
+        # Shallow scan as a fallback for renamed attributes.
+        for attr, obj in vars(root).items():
+            if attr.startswith("__"):
+                continue
+            add_candidate(f"{root_name}.{attr}", obj)
+
+    if not scored:
+        alg_type = type(alg).__name__ if alg is not None else "None"
+        alg_attrs = sorted([name for name in vars(alg).keys() if not name.startswith("__")]) if alg is not None else []
+        runner_attrs = sorted([name for name in vars(runner).keys() if not name.startswith("__")])
+        raise RuntimeError(
+            "Could not locate the RSL-RL ActorCritic/policy module for policy-only warm start. "
+            f"runner type={type(runner).__name__}, alg type={alg_type}, "
+            f"runner attrs={runner_attrs}, alg attrs={alg_attrs}"
+        )
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    score, name, module = scored[0]
+    print(f"[INFO] Policy-only warm start target module: {name} ({type(module).__name__})")
+    return module
+
+
+def _load_policy_only_warm_start(runner: OnPolicyRunner, checkpoint_path: str, device: str | torch.device):
+    """Load actor-side policy weights without carrying critic/optimizer state.
+
+    RSL-RL checkpoint formats vary slightly across versions. This helper keeps any
+    matching non-critic tensors from the saved actor_critic state dict, including
+    action standard deviation, and intentionally leaves critic/optimizer freshly
+    initialized for a new Hardware objective.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model_state = None
+    for key in ("model_state_dict", "actor_critic_state_dict", "state_dict"):
+        maybe = checkpoint.get(key) if isinstance(checkpoint, dict) else None
+        if isinstance(maybe, dict):
+            model_state = maybe
+            break
+    if model_state is None and isinstance(checkpoint, dict):
+        # Some checkpoints are raw state_dicts.
+        if all(isinstance(k, str) for k in checkpoint.keys()):
+            model_state = checkpoint
+    if model_state is None:
+        raise RuntimeError(f"Could not find model state dict in checkpoint: {checkpoint_path}")
+
+    actor_critic = _find_actor_critic_module(runner, model_state)
+    current = actor_critic.state_dict()
+    loaded = []
+    partial_loaded = []
+    skipped = []
+    for key, value in model_state.items():
+        if key not in current:
+            skipped.append(key)
+            continue
+        if key.startswith("critic") or ".critic" in key or key.startswith("value") or ".value" in key:
+            skipped.append(key)
+            continue
+        if tuple(current[key].shape) == tuple(value.shape):
+            current[key] = value.to(device=current[key].device, dtype=current[key].dtype)
+            loaded.append(key)
+            continue
+        # v1.4.7 adds two gait-phase observations.  Allow actor first-layer
+        # expansion by copying the old input columns and keeping new columns from
+        # the fresh initialization.  This keeps the Stand policy motor prior while
+        # giving the new phase inputs learnable random weights.
+        if (
+            hasattr(value, "ndim")
+            and value.ndim == 2
+            and current[key].ndim == 2
+            and current[key].shape[0] == value.shape[0]
+            and current[key].shape[1] > value.shape[1]
+            and (key.startswith("actor") or ".actor" in key or "mlp" in key or "policy" in key)
+        ):
+            expanded = current[key].clone()
+            expanded[:, : value.shape[1]] = value.to(device=current[key].device, dtype=current[key].dtype)
+            current[key] = expanded
+            partial_loaded.append(f"{key}: {tuple(value.shape)} -> {tuple(expanded.shape)}")
+            continue
+        skipped.append(key)
+    actor_critic.load_state_dict(current, strict=True)
+
+    # Preserve observation normalization if present.  When the observation dimension
+    # expands (45-D -> 47-D for v1.4.7 phase), copy the shared prefix and leave the
+    # new phase dimensions at the freshly initialized normalization defaults.
+    norm_state = None
+    if isinstance(checkpoint, dict):
+        for key in ("empirical_normalization_state_dict", "obs_normalizer_state_dict", "normalizer_state_dict"):
+            if isinstance(checkpoint.get(key), dict):
+                norm_state = checkpoint[key]
+                break
+    if norm_state is not None:
+        for attr in ("empirical_normalization", "obs_normalizer", "normalizer"):
+            module = getattr(runner, attr, None)
+            if module is None or not hasattr(module, "load_state_dict") or not hasattr(module, "state_dict"):
+                continue
+            try:
+                module.load_state_dict(norm_state)
+                print(f"[INFO]: Loaded observation normalization via runner.{attr}")
+                break
+            except Exception as exc:
+                try:
+                    current_norm = module.state_dict()
+                    merged = dict(current_norm)
+                    norm_partial = []
+                    for key, value in norm_state.items():
+                        if key not in merged or not hasattr(value, "shape") or not hasattr(merged[key], "shape"):
+                            continue
+                        if tuple(merged[key].shape) == tuple(value.shape):
+                            merged[key] = value.to(device=merged[key].device, dtype=merged[key].dtype)
+                        elif (
+                            value.ndim == 1
+                            and merged[key].ndim == 1
+                            and merged[key].shape[0] > value.shape[0]
+                        ):
+                            tmp = merged[key].clone()
+                            tmp[: value.shape[0]] = value.to(device=tmp.device, dtype=tmp.dtype)
+                            merged[key] = tmp
+                            norm_partial.append(f"{key}: {tuple(value.shape)} -> {tuple(tmp.shape)}")
+                    module.load_state_dict(merged, strict=True)
+                    print(f"[INFO]: Partially loaded observation normalization via runner.{attr}: {norm_partial}")
+                    break
+                except Exception as exc2:
+                    print(f"[WARN]: Could not load normalization via runner.{attr}: {exc}; partial failed: {exc2}")
+
+    if partial_loaded:
+        print(f"[INFO]: Partially expanded actor tensors: {partial_loaded}")
+    print(
+        f"[INFO]: Policy-only warm start loaded {len(loaded)} actor-side tensors "
+        f"and {len(partial_loaded)} expanded actor tensors; "
+        f"left critic/optimizer fresh; skipped {len(skipped)} tensors."
+    )
 
 # ---------- helpers for eval-only flow ----------
 
@@ -459,11 +675,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     runner.add_git_repo_to_log(__file__)
     # save resume path before creating a new log_dir
     if agent_cfg.resume:
-        # get path to previous checkpoint
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        # get path to previous checkpoint. --resume_log_root allows v1.4.6 Hardware
+        # to warm-start from the v5s3 Stand experiment root while logging into a
+        # clean v1.4.6 experiment root.
+        resume_log_root_path = log_root_path
+        if args_cli.resume_log_root:
+            resume_log_root_path = os.path.abspath(os.path.expanduser(args_cli.resume_log_root))
+        resume_path = get_checkpoint_path(resume_log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
-        runner.load(resume_path)
+        if args_cli.policy_only_warm_start:
+            _load_policy_only_warm_start(runner, resume_path, agent_cfg.device)
+        else:
+            # load previously trained model, including optimizer/critic state
+            runner.load(resume_path)
 
     # dump the configuration into log-directory (unchanged)
     os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)

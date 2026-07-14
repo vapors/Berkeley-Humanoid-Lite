@@ -9,6 +9,7 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -234,3 +235,58 @@ def standing_com_over_feet_l2(
     midpoint_xy = torch.mean(foot_xy, dim=1)
     com_xy = asset.data.root_com_pos_w[:, :2]
     return torch.sum(torch.square(com_xy - midpoint_xy), dim=1) * _standing_mask(env, command_name, command_threshold)
+
+
+def standing_com_forward_over_feet_band_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    command_threshold: float = 0.05,
+    target_forward_m: float = 0.055,
+    band_half_width_m: float = 0.010,
+    lateral_weight: float = 0.25,
+) -> torch.Tensor:
+    """Penalize standing COM placement outside a forward band over the foot midpoint.
+
+    The existing ``standing_com_over_feet_l2`` centers the COM over the midpoint of
+    both feet. For Lilgreen's lower athletic stand, visual checks showed the robot
+    was still slightly rear-biased. This term expresses the COM-to-foot-midpoint
+    vector in the yaw-aligned robot frame and prefers a small positive forward
+    offset while still lightly damping lateral lean.
+    """
+    if band_half_width_m < 0.0:
+        raise ValueError("band_half_width_m must be non-negative")
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_xy = asset.data.body_pos_w[:, asset_cfg.body_ids, :2]
+    midpoint_xy = torch.mean(foot_xy, dim=1)
+    delta_w = torch.zeros(asset.data.root_com_pos_w.shape[0], 3, device=asset.data.root_com_pos_w.device)
+    delta_w[:, :2] = asset.data.root_com_pos_w[:, :2] - midpoint_xy
+    delta_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), delta_w)
+    forward_error = delta_yaw[:, 0] - target_forward_m
+    forward_excess = torch.relu(torch.abs(forward_error) - band_half_width_m)
+    lateral_error = delta_yaw[:, 1]
+    value = torch.square(forward_excess) + lateral_weight * torch.square(lateral_error)
+    return value * _standing_mask(env, command_name, command_threshold)
+
+
+def standing_forward_lean_projected_gravity_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_projected_gravity_x: float = 0.052,
+    std: float = 0.075,
+    command_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward a very small stand-only forward lean using projected gravity.
+
+    Upright is approximately projected_gravity_b = [0, 0, -1]. A small positive
+    x component corresponds to a slight forward pitch for the current Lilgreen
+    convention. This cue is deliberately weak; COM-over-feet remains the primary
+    sagittal placement target.
+    """
+    if std <= 0.0:
+        raise ValueError("std must be positive")
+    asset: Articulation = env.scene[asset_cfg.name]
+    mask = _standing_mask(env, command_name, command_threshold)
+    error = asset.data.projected_gravity_b[:, 0] - target_projected_gravity_x
+    return torch.exp(-0.5 * torch.square(error / std)) * mask

@@ -647,3 +647,305 @@ def st3215_loaded_v145_hardware_stage_curriculum(
         "curriculum_profile_id": 145.0,
     }
 
+
+def _find_command_tensor_for_floor(command_term):
+    """Best-effort lookup of mutable command tensor inside UniformVelocityCommand."""
+    for attr in ("vel_command_b", "command", "_command", "commands", "_commands"):
+        if not hasattr(command_term, attr):
+            continue
+        try:
+            target = getattr(command_term, attr)
+            if torch.is_tensor(target) and target.ndim == 2 and target.shape[1] >= 3:
+                return target
+        except Exception:
+            pass
+    return None
+
+
+def enforce_nonstanding_command_floor(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    command_name: str = "base_velocity",
+    floor_mps: float = 0.22,
+    eps: float = 1.0e-6,
+) -> dict[str, torch.Tensor | float]:
+    """Raise non-standing horizontal commands below a minimum speed floor.
+
+    This keeps the command distribution continuous, but removes the ambiguous
+    near-zero locomotion samples that let the policy treat Hardware training as
+    standing with tiny disturbances. True standing environments remain zero.
+    """
+    del env_ids
+    command_term = env.command_manager.get_term(command_name)
+    command = _find_command_tensor_for_floor(command_term)
+    if command is None:
+        command = env.command_manager.get_command(command_name)
+
+    xy = command[:, :2]
+    norm = torch.linalg.vector_norm(xy, dim=1)
+
+    standing_mask = None
+    for attr in ("is_standing_env", "_is_standing_env"):
+        if hasattr(command_term, attr):
+            candidate = getattr(command_term, attr)
+            if torch.is_tensor(candidate):
+                standing_mask = candidate.bool()
+                break
+    if standing_mask is None:
+        standing_mask = norm <= eps
+
+    needs_floor = (~standing_mask) & (norm > eps) & (norm < floor_mps)
+    scale = floor_mps / torch.clamp(norm, min=eps)
+    command[:, :2] = torch.where(needs_floor.unsqueeze(-1), xy * scale.unsqueeze(-1), xy)
+
+    return {
+        "command_floor_mps": float(floor_mps),
+        "command_floor_adjusted_fraction": float(torch.mean(needs_floor.float()).item()),
+    }
+
+
+def st3215_loaded_v146_anti_planted_hardware_stage_curriculum(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    stage_step_boundaries: tuple[int, int, int] = (32000, 96000, 192000),
+    standing_fractions: tuple[float, float, float, float] = (0.25, 0.18, 0.15, 0.12),
+    lin_vel_x_ranges: tuple[tuple[float, float], ...] = ((-0.42, 0.42), (-0.60, 0.60), (-0.80, 0.80), (-1.00, 1.00)),
+    lin_vel_y_ranges: tuple[tuple[float, float], ...] = ((-0.10, 0.10), (-0.18, 0.18), (-0.30, 0.30), (-0.40, 0.40)),
+    ang_vel_z_ranges: tuple[tuple[float, float], ...] = ((-0.25, 0.25), (-0.50, 0.50), (-0.75, 0.75), (-1.00, 1.00)),
+    root_velocity_ranges: tuple[float, float, float, float] = (0.025, 0.050, 0.090, 0.140),
+    joint_reset_offsets: tuple[float, float, float, float] = (0.010, 0.020, 0.032, 0.045),
+    push_xy_ranges: tuple[float, float, float, float] = (0.0, 0.0, 0.02, 0.04),
+    mass_scale_ranges: tuple[tuple[float, float], ...] = ((0.98, 1.02), (0.96, 1.04), (0.94, 1.06), (0.93, 1.07)),
+) -> dict[str, torch.Tensor | float]:
+    """v1.4.6 anti-planted Hardware curriculum.
+
+    This keeps continuous commands/no command bins, but lowers standing exposure
+    and starts locomotion samples above the ambiguous micro-command region through
+    ``enforce_nonstanding_command_floor``. Disturbances remain gentle so the main
+    pressure is: move under a move command, do not brace in double support.
+    """
+    del env_ids
+    step = int(env.common_step_counter)
+    b0, b1, b2 = stage_step_boundaries
+    stage = 0 if step < b0 else 1 if step < b1 else 2 if step < b2 else 3
+
+    previous_stage = getattr(env, "_bhl_v146_st3215_loaded_hardware_stage", None)
+    if previous_stage != stage:
+        command_term = env.command_manager.get_term("base_velocity")
+        command_term.cfg.rel_standing_envs = standing_fractions[stage]
+        command_term.cfg.ranges.lin_vel_x = lin_vel_x_ranges[stage]
+        command_term.cfg.ranges.lin_vel_y = lin_vel_y_ranges[stage]
+        command_term.cfg.ranges.ang_vel_z = ang_vel_z_ranges[stage]
+
+        reset_base_cfg = env.event_manager.get_term_cfg("reset_base")
+        root_vel = root_velocity_ranges[stage]
+        reset_base_cfg.params["velocity_range"] = {
+            "x": (-root_vel, root_vel),
+            "y": (-root_vel, root_vel),
+            "z": (0.0, 0.0),
+            "roll": (-root_vel, root_vel),
+            "pitch": (-root_vel, root_vel),
+            "yaw": (-root_vel, root_vel),
+        }
+        env.event_manager.set_term_cfg("reset_base", reset_base_cfg)
+
+        reset_joint_cfg = env.event_manager.get_term_cfg("reset_robot_joints")
+        offset = joint_reset_offsets[stage]
+        reset_joint_cfg.params["position_range"] = (-offset, offset)
+        env.event_manager.set_term_cfg("reset_robot_joints", reset_joint_cfg)
+
+        mass_cfg = env.event_manager.get_term_cfg("base_mass")
+        mass_cfg.params["mass_distribution_params"] = mass_scale_ranges[stage]
+        env.event_manager.set_term_cfg("base_mass", mass_cfg)
+
+        push_cfg = env.event_manager.get_term_cfg("push_robot")
+        push = push_xy_ranges[stage]
+        push_cfg.params["velocity_range"] = {"x": (-push, push), "y": (-push, push)}
+        env.event_manager.set_term_cfg("push_robot", push_cfg)
+
+        command_term.time_left[:] = 0.0
+        env._bhl_v146_st3215_loaded_hardware_stage = stage
+
+    action_term = env.action_manager.get_term("joint_pos")
+    return {
+        "stage": float(stage),
+        "standing_fraction": float(standing_fractions[stage]),
+        "cmd_x_abs_max": float(max(abs(v) for v in lin_vel_x_ranges[stage])),
+        "cmd_y_abs_max": float(max(abs(v) for v in lin_vel_y_ranges[stage])),
+        "cmd_yaw_abs_max": float(max(abs(v) for v in ang_vel_z_ranges[stage])),
+        "root_reset_velocity_abs_max": float(root_velocity_ranges[stage]),
+        "joint_reset_offset_abs_max": float(joint_reset_offsets[stage]),
+        "push_xy_abs_max": float(push_xy_ranges[stage]),
+        "mass_scale_min": float(mass_scale_ranges[stage][0]),
+        "mass_scale_max": float(mass_scale_ranges[stage][1]),
+        "actuator_delay_mean_ms": float(torch.mean(action_term.sampled_total_delay_s).item() * 1000.0),
+        "actuator_tau_mean_ms": float(torch.mean(action_term.sampled_tau_s).item() * 1000.0),
+        "actuator_velocity_scale_mean": float(torch.mean(action_term.sampled_velocity_scale).item()),
+        "curriculum_profile_id": 146.0,
+    }
+
+
+
+
+def st3215_loaded_v147_phase_guided_hardware_stage_curriculum(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    stage_step_boundaries: tuple[int, int, int] = (40000, 120000, 240000),
+    standing_fractions: tuple[float, float, float, float] = (0.22, 0.16, 0.12, 0.10),
+    lin_vel_x_ranges: tuple[tuple[float, float], ...] = ((-0.40, 0.40), (-0.55, 0.55), (-0.75, 0.75), (-0.95, 0.95)),
+    lin_vel_y_ranges: tuple[tuple[float, float], ...] = ((-0.08, 0.08), (-0.14, 0.14), (-0.24, 0.24), (-0.34, 0.34)),
+    ang_vel_z_ranges: tuple[tuple[float, float], ...] = ((-0.18, 0.18), (-0.35, 0.35), (-0.60, 0.60), (-0.85, 0.85)),
+    root_velocity_ranges: tuple[float, float, float, float] = (0.020, 0.040, 0.070, 0.110),
+    joint_reset_offsets: tuple[float, float, float, float] = (0.008, 0.016, 0.026, 0.038),
+    push_xy_ranges: tuple[float, float, float, float] = (0.0, 0.0, 0.015, 0.030),
+    mass_scale_ranges: tuple[tuple[float, float], ...] = ((0.98, 1.02), (0.97, 1.03), (0.95, 1.05), (0.94, 1.06)),
+) -> dict[str, torch.Tensor | float]:
+    """v1.4.7 phase-guided Hardware curriculum.
+
+    Continuous commands are preserved.  The main new scaffold is the phase input
+    and phase-conditioned contact shaping, so the command curriculum is less
+    aggressive than v1.4.6 and lets the policy learn rhythm before broad stress.
+    """
+    del env_ids
+    step = int(env.common_step_counter)
+    b0, b1, b2 = stage_step_boundaries
+    stage = 0 if step < b0 else 1 if step < b1 else 2 if step < b2 else 3
+
+    previous_stage = getattr(env, "_bhl_v147_st3215_loaded_hardware_stage", None)
+    if previous_stage != stage:
+        command_term = env.command_manager.get_term("base_velocity")
+        command_term.cfg.rel_standing_envs = standing_fractions[stage]
+        command_term.cfg.ranges.lin_vel_x = lin_vel_x_ranges[stage]
+        command_term.cfg.ranges.lin_vel_y = lin_vel_y_ranges[stage]
+        command_term.cfg.ranges.ang_vel_z = ang_vel_z_ranges[stage]
+
+        reset_base_cfg = env.event_manager.get_term_cfg("reset_base")
+        root_vel = root_velocity_ranges[stage]
+        reset_base_cfg.params["velocity_range"] = {
+            "x": (-root_vel, root_vel),
+            "y": (-root_vel, root_vel),
+            "z": (0.0, 0.0),
+            "roll": (-root_vel, root_vel),
+            "pitch": (-root_vel, root_vel),
+            "yaw": (-root_vel, root_vel),
+        }
+        env.event_manager.set_term_cfg("reset_base", reset_base_cfg)
+
+        reset_joint_cfg = env.event_manager.get_term_cfg("reset_robot_joints")
+        offset = joint_reset_offsets[stage]
+        reset_joint_cfg.params["position_range"] = (-offset, offset)
+        env.event_manager.set_term_cfg("reset_robot_joints", reset_joint_cfg)
+
+        mass_cfg = env.event_manager.get_term_cfg("base_mass")
+        mass_cfg.params["mass_distribution_params"] = mass_scale_ranges[stage]
+        env.event_manager.set_term_cfg("base_mass", mass_cfg)
+
+        push_cfg = env.event_manager.get_term_cfg("push_robot")
+        push = push_xy_ranges[stage]
+        push_cfg.params["velocity_range"] = {"x": (-push, push), "y": (-push, push)}
+        env.event_manager.set_term_cfg("push_robot", push_cfg)
+
+        command_term.time_left[:] = 0.0
+        env._bhl_v147_st3215_loaded_hardware_stage = stage
+
+    action_term = env.action_manager.get_term("joint_pos")
+    return {
+        "stage": float(stage),
+        "standing_fraction": float(standing_fractions[stage]),
+        "cmd_x_abs_max": float(max(abs(v) for v in lin_vel_x_ranges[stage])),
+        "cmd_y_abs_max": float(max(abs(v) for v in lin_vel_y_ranges[stage])),
+        "cmd_yaw_abs_max": float(max(abs(v) for v in ang_vel_z_ranges[stage])),
+        "root_reset_velocity_abs_max": float(root_velocity_ranges[stage]),
+        "joint_reset_offset_abs_max": float(joint_reset_offsets[stage]),
+        "push_xy_abs_max": float(push_xy_ranges[stage]),
+        "mass_scale_min": float(mass_scale_ranges[stage][0]),
+        "mass_scale_max": float(mass_scale_ranges[stage][1]),
+        "actuator_delay_mean_ms": float(torch.mean(action_term.sampled_total_delay_s).item() * 1000.0),
+        "actuator_tau_mean_ms": float(torch.mean(action_term.sampled_tau_s).item() * 1000.0),
+        "actuator_velocity_scale_mean": float(torch.mean(action_term.sampled_velocity_scale).item()),
+        "curriculum_profile_id": 147.0,
+    }
+
+
+
+def st3215_loaded_v148_phase_lift_step_hardware_stage_curriculum(
+    env: RLTaskEnv,
+    env_ids: Sequence[int],
+    stage_step_boundaries: tuple[int, int, int] = (48000, 120000, 216000),
+    standing_fractions: tuple[float, float, float, float] = (0.18, 0.14, 0.10, 0.08),
+    lin_vel_x_ranges: tuple[tuple[float, float], ...] = ((-0.30, 0.45), (-0.45, 0.60), (-0.60, 0.75), (-0.75, 0.90)),
+    lin_vel_y_ranges: tuple[tuple[float, float], ...] = ((-0.06, 0.06), (-0.10, 0.10), (-0.18, 0.18), (-0.28, 0.28)),
+    ang_vel_z_ranges: tuple[tuple[float, float], ...] = ((-0.12, 0.12), (-0.22, 0.22), (-0.45, 0.45), (-0.70, 0.70)),
+    root_velocity_ranges: tuple[float, float, float, float] = (0.015, 0.030, 0.055, 0.085),
+    joint_reset_offsets: tuple[float, float, float, float] = (0.006, 0.012, 0.022, 0.034),
+    push_xy_ranges: tuple[float, float, float, float] = (0.0, 0.0, 0.010, 0.020),
+    mass_scale_ranges: tuple[tuple[float, float], ...] = ((0.99, 1.01), (0.98, 1.02), (0.96, 1.04), (0.94, 1.06)),
+) -> dict[str, torch.Tensor | float]:
+    """v1.4.8 phase-lift/foot-placement Hardware curriculum.
+
+    Stage 1 emphasizes phase alternation plus actual foot clearance at modest
+    commands.  Stage 2 adds more placement pressure.  Stage 3 increases tracking
+    pressure through larger commands.  Stage 4 broadens the command envelope.  The
+    reward weights are fixed in the config; this curriculum mainly controls the
+    command and disturbance envelope so early learning is not dominated by
+    high-speed yaw/forward breakdowns.
+    """
+    del env_ids
+    step = int(env.common_step_counter)
+    b0, b1, b2 = stage_step_boundaries
+    stage = 0 if step < b0 else 1 if step < b1 else 2 if step < b2 else 3
+
+    previous_stage = getattr(env, "_bhl_v148_st3215_loaded_hardware_stage", None)
+    if previous_stage != stage:
+        command_term = env.command_manager.get_term("base_velocity")
+        command_term.cfg.rel_standing_envs = standing_fractions[stage]
+        command_term.cfg.ranges.lin_vel_x = lin_vel_x_ranges[stage]
+        command_term.cfg.ranges.lin_vel_y = lin_vel_y_ranges[stage]
+        command_term.cfg.ranges.ang_vel_z = ang_vel_z_ranges[stage]
+
+        reset_base_cfg = env.event_manager.get_term_cfg("reset_base")
+        root_vel = root_velocity_ranges[stage]
+        reset_base_cfg.params["velocity_range"] = {
+            "x": (-root_vel, root_vel),
+            "y": (-root_vel, root_vel),
+            "z": (0.0, 0.0),
+            "roll": (-root_vel, root_vel),
+            "pitch": (-root_vel, root_vel),
+            "yaw": (-root_vel, root_vel),
+        }
+        env.event_manager.set_term_cfg("reset_base", reset_base_cfg)
+
+        reset_joint_cfg = env.event_manager.get_term_cfg("reset_robot_joints")
+        offset = joint_reset_offsets[stage]
+        reset_joint_cfg.params["position_range"] = (-offset, offset)
+        env.event_manager.set_term_cfg("reset_robot_joints", reset_joint_cfg)
+
+        mass_cfg = env.event_manager.get_term_cfg("base_mass")
+        mass_cfg.params["mass_distribution_params"] = mass_scale_ranges[stage]
+        env.event_manager.set_term_cfg("base_mass", mass_cfg)
+
+        push_cfg = env.event_manager.get_term_cfg("push_robot")
+        push = push_xy_ranges[stage]
+        push_cfg.params["velocity_range"] = {"x": (-push, push), "y": (-push, push)}
+        env.event_manager.set_term_cfg("push_robot", push_cfg)
+
+        command_term.time_left[:] = 0.0
+        env._bhl_v148_st3215_loaded_hardware_stage = stage
+
+    action_term = env.action_manager.get_term("joint_pos")
+    return {
+        "stage": float(stage),
+        "standing_fraction": float(standing_fractions[stage]),
+        "cmd_x_abs_max": float(max(abs(v) for v in lin_vel_x_ranges[stage])),
+        "cmd_y_abs_max": float(max(abs(v) for v in lin_vel_y_ranges[stage])),
+        "cmd_yaw_abs_max": float(max(abs(v) for v in ang_vel_z_ranges[stage])),
+        "root_reset_velocity_abs_max": float(root_velocity_ranges[stage]),
+        "joint_reset_offset_abs_max": float(joint_reset_offsets[stage]),
+        "push_xy_abs_max": float(push_xy_ranges[stage]),
+        "mass_scale_min": float(mass_scale_ranges[stage][0]),
+        "mass_scale_max": float(mass_scale_ranges[stage][1]),
+        "actuator_delay_mean_ms": float(torch.mean(action_term.sampled_total_delay_s).item() * 1000.0),
+        "actuator_tau_mean_ms": float(torch.mean(action_term.sampled_tau_s).item() * 1000.0),
+        "actuator_velocity_scale_mean": float(torch.mean(action_term.sampled_velocity_scale).item()),
+        "curriculum_profile_id": 148.0,
+    }

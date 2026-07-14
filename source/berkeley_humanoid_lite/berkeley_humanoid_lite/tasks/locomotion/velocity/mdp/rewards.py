@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import math
 import torch
 from typing import TYPE_CHECKING
 
@@ -743,3 +744,565 @@ def moving_soft_torque_utilization_l2(
     excess = torch.relu(utilization - soft_ratio)
     return torch.sum(torch.square(excess), dim=1) * _moving_command_mask(env, command_name, command_threshold)
 
+
+def moving_long_double_support_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.22,
+    max_double_support_s: float = 0.30,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize long planted double-support under nonzero locomotion commands.
+
+    v1.4.6 specifically targets the planted/braced local optimum observed in
+    Hardware-v5s3. Brief double-support transitions are allowed, but remaining
+    on both feet for longer than ``max_double_support_s`` while commanded to move
+    becomes increasingly expensive.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    long_double_support_time = torch.relu(torch.min(contact_time, dim=1)[0] - max_double_support_s)
+    return long_double_support_time * _moving_command_mask(env, command_name, command_threshold)
+
+
+def moving_planted_no_progress_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.22,
+    min_fraction: float = 0.35,
+    max_double_support_s: float = 0.20,
+    force_threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize the exact failure mode: planted double-support with no progress.
+
+    This combines command-aligned velocity deficit with persistent double support.
+    It is stronger and more targeted than a generic action/torque penalty: the
+    policy can avoid it by actually moving along the command or by entering a
+    step-like support transition.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    planted_time = torch.relu(torch.min(contact_time, dim=1)[0] - max_double_support_s)
+
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])[:, :2]
+    projected_speed = torch.sum(vel_yaw * command_dir, dim=1)
+    required_speed = min_fraction * command_norm
+    no_progress = torch.relu(required_speed - projected_speed)
+    return planted_time * no_progress * (command_norm > command_threshold)
+
+
+
+
+# -----------------------------------------------------------------------------
+# v1.4.7 phase-guided alternating gait scaffold
+# -----------------------------------------------------------------------------
+
+def _gait_phase(env: ManagerBasedRLEnv, period_s: float = 0.72, phase_offset_s: float = 0.0) -> torch.Tensor:
+    """Per-environment gait phase in [0, 1), derived from episode time.
+
+    This is intentionally simple and reset-safe.  It gives the policy/rewards a
+    light alternating scaffold without command bins or a learned gait scheduler.
+    """
+    if period_s <= 1.0e-6:
+        raise ValueError("period_s must be positive")
+    if hasattr(env, "episode_length_buf"):
+        t = env.episode_length_buf.to(dtype=torch.float32) * float(env.step_dt)
+    else:
+        # Fallback for API variants: use common step counter for all envs.
+        device = env.scene["robot"].data.root_pos_w.device
+        t = torch.full((env.num_envs,), float(getattr(env, "common_step_counter", 0)) * float(env.step_dt), device=device)
+    return torch.remainder((t + float(phase_offset_s)) / float(period_s), 1.0)
+
+
+def gait_phase_sin_cos(env: ManagerBasedRLEnv, period_s: float = 0.72, phase_offset_s: float = 0.0) -> torch.Tensor:
+    """Observation term: [sin(2*pi*phase), cos(2*pi*phase)].
+
+    Adding this two-value clock changes the Hardware-v1.4.7 policy observation
+    contract from 45-D to 47-D.  The stand warm-start loader copies old actor
+    weights into the shared observation columns and leaves the new phase columns
+    freshly initialized.
+    """
+    phase = _gait_phase(env, period_s=period_s, phase_offset_s=phase_offset_s)
+    angle = 2.0 * math.pi * phase
+    return torch.stack((torch.sin(angle), torch.cos(angle)), dim=-1)
+
+
+def _phase_expected_contacts(
+    env: ManagerBasedRLEnv,
+    period_s: float = 0.72,
+    duty_factor: float = 0.58,
+    transition_width: float = 0.08,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return expected left/right stance booleans and a transition mask.
+
+    Phase convention:
+    - phase in [0.0, 0.5): left stance, right swing
+    - phase in [0.5, 1.0): right stance, left swing
+    Near the 0/0.5 boundaries, brief double support is allowed.
+    """
+    phase = _gait_phase(env, period_s=period_s)
+    # Small double-support windows around phase transitions.
+    d0 = torch.minimum(phase, 1.0 - phase)
+    d05 = torch.abs(phase - 0.5)
+    transition = torch.minimum(d0, d05) < transition_width
+    left_stance_half = phase < 0.5
+    # Use duty_factor to extend stance slightly around transitions, but keep it simple.
+    left_expected = torch.where(transition, torch.ones_like(left_stance_half), left_stance_half)
+    right_expected = torch.where(transition, torch.ones_like(left_stance_half), ~left_stance_half)
+    return left_expected.bool(), right_expected.bool(), transition
+
+
+def _foot_contacts(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, force_threshold: float = 1.0) -> torch.Tensor:
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    return forces.norm(dim=-1).max(dim=1)[0] > force_threshold
+
+
+def phase_guided_contact_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.08,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward following a simple alternating contact scaffold.
+
+    This gives the policy an explicit rhythm target: one foot stance while the
+    other swings, with short double-support transitions.  It distinguishes
+    alternating stepping from both previous exploits: planted double support and
+    long one-foot-air hopping.
+    """
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    left_contact = contacts[:, 0]
+    right_contact = contacts[:, 1]
+    # In transition, both feet contacting is best; outside transition, stance foot
+    # contact + swing foot air is best.
+    transition_score = (left_contact & right_contact).float()
+    left_half_score = (left_contact & (~right_contact)).float()
+    right_half_score = ((~left_contact) & right_contact).float()
+    phase_score = torch.where(
+        transition,
+        transition_score,
+        torch.where(left_expected & (~right_expected), left_half_score, right_half_score),
+    )
+    return phase_score * _moving_command_mask(env, command_name, command_threshold)
+
+
+def phase_guided_contact_mismatch_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.08,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize wrong-foot contact pattern under the phase scaffold."""
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    left_contact = contacts[:, 0]
+    right_contact = contacts[:, 1]
+    # No support is handled strongly elsewhere; here score contact-pattern mismatch.
+    left_err = (left_contact != left_expected).float()
+    right_err = (right_contact != right_expected).float()
+    # Be gentler in transition windows because contact timing jitter is expected.
+    penalty = torch.where(transition, 0.35 * (left_err + right_err), left_err + right_err)
+    return penalty * _moving_command_mask(env, command_name, command_threshold)
+
+
+def phase_guided_swing_clearance_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.08,
+    target_clearance_m: float = 0.030,
+    clearance_std_m: float = 0.018,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward useful swing-foot clearance for the phase-selected swing foot."""
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    asset = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    left_contact = contacts[:, 0]
+    right_contact = contacts[:, 1]
+    left_swing = (~left_expected) & right_contact & (~left_contact) & (~transition)
+    right_swing = (~right_expected) & left_contact & (~right_contact) & (~transition)
+    # clearance relative to stance foot height
+    left_clear = foot_z[:, 0] - foot_z[:, 1]
+    right_clear = foot_z[:, 1] - foot_z[:, 0]
+    clear = torch.where(left_swing, left_clear, torch.where(right_swing, right_clear, torch.zeros_like(left_clear)))
+    reward = torch.exp(-0.5 * torch.square((clear - target_clearance_m) / clearance_std_m))
+    reward = reward * (left_swing | right_swing)
+    return reward * _moving_command_mask(env, command_name, command_threshold)
+
+
+def phase_guided_swing_velocity_along_command(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.08,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward the phase-selected swing foot moving in the commanded direction."""
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    left_swing = (~left_expected) & contacts[:, 1] & (~contacts[:, 0]) & (~transition)
+    right_swing = (~right_expected) & contacts[:, 0] & (~contacts[:, 1]) & (~transition)
+
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    foot_vel_yaw = quat_apply_inverse(
+        yaw_quat(asset.data.root_quat_w).unsqueeze(1).expand(-1, len(asset_cfg.body_ids), -1),
+        asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :3],
+    )[:, :, :2]
+    left_proj = torch.sum(foot_vel_yaw[:, 0, :] * command_dir, dim=1)
+    right_proj = torch.sum(foot_vel_yaw[:, 1, :] * command_dir, dim=1)
+    reward = torch.where(left_swing, torch.clamp(left_proj, min=0.0), torch.zeros_like(left_proj))
+    reward = reward + torch.where(right_swing, torch.clamp(right_proj, min=0.0), torch.zeros_like(right_proj))
+    return reward * (command_norm > command_threshold)
+
+
+def phase_guided_foot_placement_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.08,
+    target_step_m: float = 0.060,
+    step_std_m: float = 0.050,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward swing foot placement ahead of the stance foot along command direction."""
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    if contacts.shape[1] < 2:
+        return torch.zeros(contacts.shape[0], device=contacts.device)
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    left_swing = (~left_expected) & contacts[:, 1] & (~transition)
+    right_swing = (~right_expected) & contacts[:, 0] & (~transition)
+
+    asset = env.scene[asset_cfg.name]
+    foot_pos = asset.data.body_pos_w[:, asset_cfg.body_ids, :3]
+    left_delta = foot_pos[:, 0, :] - foot_pos[:, 1, :]
+    right_delta = foot_pos[:, 1, :] - foot_pos[:, 0, :]
+    left_delta_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), left_delta)[:, :2]
+    right_delta_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), right_delta)[:, :2]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    command_norm = torch.linalg.vector_norm(command, dim=1)
+    command_dir = command / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    left_step = torch.sum(left_delta_yaw * command_dir, dim=1)
+    right_step = torch.sum(right_delta_yaw * command_dir, dim=1)
+    projected = torch.where(left_swing, left_step, torch.where(right_swing, right_step, torch.zeros_like(left_step)))
+    reward = torch.exp(-0.5 * torch.square((projected - target_step_m) / step_std_m))
+    reward = reward * (left_swing | right_swing)
+    return reward * (command_norm > command_threshold)
+
+
+def phase_guided_long_air_hold_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    command_threshold: float = 0.22,
+    max_air_time_s: float = 0.28,
+) -> torch.Tensor:
+    """Penalize holding either foot in the air too long under moving commands."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    excess = torch.relu(torch.max(air_time, dim=1)[0] - max_air_time_s)
+    return excess * _moving_command_mask(env, command_name, command_threshold)
+
+
+# -----------------------------------------------------------------------------
+# v1.4.8 phase-lift step refinement
+# -----------------------------------------------------------------------------
+
+def _phase_swing_state(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    force_threshold: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shared phase-selected swing-foot state for v1.4.8 rewards.
+
+    Returns ``(active, clearance, step_forward, command_norm, projected_base_speed, lateral_speed)``.
+    ``active`` means a non-transition moving command where the expected stance foot
+    is actually grounded.  The swing foot is *not* required to be contact-free so
+    these rewards can shape lift before the contact sensor has declared air time.
+    """
+    contacts = _foot_contacts(env, sensor_cfg, force_threshold=force_threshold)
+    device = contacts.device
+    zeros = torch.zeros(contacts.shape[0], device=device)
+    if contacts.shape[1] < 2:
+        return zeros.bool(), zeros, zeros, zeros, zeros, zeros
+
+    left_expected, right_expected, transition = _phase_expected_contacts(
+        env, period_s=period_s, transition_width=transition_width
+    )
+    left_contact = contacts[:, 0]
+    right_contact = contacts[:, 1]
+
+    # Phase convention inherited from v1.4.7:
+    # left_expected=False => left swing / right stance, and vice versa.
+    left_active = (~left_expected) & right_contact & (~transition)
+    right_active = (~right_expected) & left_contact & (~transition)
+    active = left_active | right_active
+
+    asset = env.scene[asset_cfg.name]
+    foot_pos = asset.data.body_pos_w[:, asset_cfg.body_ids, :3]
+    left_clearance = foot_pos[:, 0, 2] - foot_pos[:, 1, 2]
+    right_clearance = foot_pos[:, 1, 2] - foot_pos[:, 0, 2]
+    clearance = torch.where(left_active, left_clearance, torch.where(right_active, right_clearance, zeros))
+
+    left_delta = foot_pos[:, 0, :] - foot_pos[:, 1, :]
+    right_delta = foot_pos[:, 1, :] - foot_pos[:, 0, :]
+    yaw = yaw_quat(asset.data.root_quat_w)
+    left_delta_yaw = quat_apply_inverse(yaw, left_delta)[:, :2]
+    right_delta_yaw = quat_apply_inverse(yaw, right_delta)[:, :2]
+
+    command = env.command_manager.get_command(command_name)
+    command_xy = command[:, :2]
+    command_norm = torch.linalg.vector_norm(command_xy, dim=1)
+    command_dir = command_xy / torch.clamp(command_norm.unsqueeze(-1), min=1.0e-6)
+    left_step = torch.sum(left_delta_yaw * command_dir, dim=1)
+    right_step = torch.sum(right_delta_yaw * command_dir, dim=1)
+    step_forward = torch.where(left_active, left_step, torch.where(right_active, right_step, zeros))
+
+    base_vel_yaw = quat_apply_inverse(yaw, asset.data.root_lin_vel_w[:, :3])[:, :2]
+    projected_base_speed = torch.sum(base_vel_yaw * command_dir, dim=1)
+    lateral_speed = base_vel_yaw[:, 1]
+    active = active & (command_norm > command_threshold)
+    return active, clearance, step_forward, command_norm, projected_base_speed, lateral_speed
+
+
+def phase_guided_expected_swing_clearance_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    target_clearance_m: float = 0.030,
+    clearance_std_m: float = 0.016,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward phase-selected swing foot for reaching a real clearance target.
+
+    Unlike the v1.4.7 reward, this does not require the swing foot to already be
+    contact-free.  That avoids the rocking/unweighting shortcut where the robot
+    matched phase contacts while barely lifting its feet.
+    """
+    active, clearance, _, _, _, _ = _phase_swing_state(
+        env,
+        command_name,
+        sensor_cfg,
+        asset_cfg=asset_cfg,
+        command_threshold=command_threshold,
+        period_s=period_s,
+        transition_width=transition_width,
+        force_threshold=force_threshold,
+    )
+    reward = torch.exp(-0.5 * torch.square((clearance - target_clearance_m) / clearance_std_m))
+    return reward * active.float()
+
+
+def phase_guided_swing_clearance_shortfall_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    min_clearance_m: float = 0.016,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize phase-matched swing that never gets the foot off the floor."""
+    active, clearance, _, _, _, _ = _phase_swing_state(
+        env,
+        command_name,
+        sensor_cfg,
+        asset_cfg=asset_cfg,
+        command_threshold=command_threshold,
+        period_s=period_s,
+        transition_width=transition_width,
+        force_threshold=force_threshold,
+    )
+    shortfall = torch.relu(float(min_clearance_m) - clearance) / max(float(min_clearance_m), 1.0e-6)
+    return shortfall * active.float()
+
+
+def phase_guided_step_placement_target_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    target_step_m: float = 0.050,
+    step_std_m: float = 0.035,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Reward the phase-selected swing foot for being placed forward of stance."""
+    active, _, step_forward, _, _, _ = _phase_swing_state(
+        env,
+        command_name,
+        sensor_cfg,
+        asset_cfg=asset_cfg,
+        command_threshold=command_threshold,
+        period_s=period_s,
+        transition_width=transition_width,
+        force_threshold=force_threshold,
+    )
+    reward = torch.exp(-0.5 * torch.square((step_forward - target_step_m) / step_std_m))
+    return reward * active.float()
+
+
+def phase_guided_step_shortfall_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    min_step_m: float = 0.025,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize alternating contact with almost no commanded-direction step."""
+    active, _, step_forward, _, _, _ = _phase_swing_state(
+        env,
+        command_name,
+        sensor_cfg,
+        asset_cfg=asset_cfg,
+        command_threshold=command_threshold,
+        period_s=period_s,
+        transition_width=transition_width,
+        force_threshold=force_threshold,
+    )
+    shortfall = torch.relu(float(min_step_m) - step_forward) / max(float(min_step_m), 1.0e-6)
+    return shortfall * active.float()
+
+
+def phase_guided_rocking_no_step_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.22,
+    period_s: float = 0.72,
+    transition_width: float = 0.09,
+    min_clearance_m: float = 0.014,
+    min_step_m: float = 0.022,
+    min_progress_fraction: float = 0.18,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize the v1.4.7 rocking shortcut under moving commands.
+
+    This term activates when the phase scaffold is present but the swing foot is
+    low, the foot is not placed forward, and the base is not making enough
+    command-aligned progress.  It is intentionally moderate; it nudges the policy
+    away from rocking without destroying the newly learned rhythm.
+    """
+    active, clearance, step_forward, command_norm, projected_speed, _ = _phase_swing_state(
+        env,
+        command_name,
+        sensor_cfg,
+        asset_cfg=asset_cfg,
+        command_threshold=command_threshold,
+        period_s=period_s,
+        transition_width=transition_width,
+        force_threshold=force_threshold,
+    )
+    clearance_deficit = torch.relu(float(min_clearance_m) - clearance) / max(float(min_clearance_m), 1.0e-6)
+    step_deficit = torch.relu(float(min_step_m) - step_forward) / max(float(min_step_m), 1.0e-6)
+    progress_deficit = torch.relu(float(min_progress_fraction) * command_norm - projected_speed)
+    return (0.50 * clearance_deficit + 0.50 * step_deficit) * progress_deficit * active.float()
+
+
+def moving_yaw_stability_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    lin_command_threshold: float = 0.12,
+    yaw_command_threshold: float = 0.12,
+    yaw_error_std: float = 0.55,
+    yaw_overspeed_margin: float = 0.35,
+    lateral_velocity_weight: float = 0.45,
+    yaw_only_linear_drift_weight: float = 0.35,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize wild yaw/spin behavior while preserving commanded turns.
+
+    Forward-only commands penalize yaw rate away from zero; yaw commands penalize
+    yaw-rate tracking error rather than yaw itself.  Yaw-only commands also mildly
+    penalize drifting translation, so the robot cannot satisfy turn commands by
+    breaking into uncontrolled forward/side motion.
+    """
+    asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    lin_cmd = command[:, :2]
+    yaw_cmd = command[:, 2]
+    lin_norm = torch.linalg.vector_norm(lin_cmd, dim=1)
+    yaw_abs = torch.abs(yaw_cmd)
+
+    yaw_rate = asset.data.root_ang_vel_w[:, 2]
+    yaw_error = yaw_rate - yaw_cmd
+    yaw_error_pen = torch.square(yaw_error / max(float(yaw_error_std), 1.0e-6))
+    overspeed = torch.relu(torch.abs(yaw_rate) - yaw_abs - float(yaw_overspeed_margin))
+    overspeed_pen = torch.square(overspeed)
+
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])[:, :2]
+    lateral_pen = torch.square(vel_yaw[:, 1])
+    yaw_only = (yaw_abs > yaw_command_threshold) & (lin_norm < lin_command_threshold)
+    yaw_only_drift = torch.linalg.vector_norm(vel_yaw, dim=1) ** 2
+
+    active = (lin_norm > lin_command_threshold) | (yaw_abs > yaw_command_threshold)
+    return (
+        yaw_error_pen
+        + overspeed_pen
+        + float(lateral_velocity_weight) * lateral_pen * (lin_norm > lin_command_threshold).float()
+        + float(yaw_only_linear_drift_weight) * yaw_only_drift * yaw_only.float()
+    ) * active.float()

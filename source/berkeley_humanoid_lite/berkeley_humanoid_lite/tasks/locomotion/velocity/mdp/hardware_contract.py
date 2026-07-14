@@ -273,6 +273,28 @@ RESIDUAL_ACTION_SCALE_RAD_V1_4_5_STABILIZED = RESIDUAL_ACTION_SCALE_RAD_V1_4_5_A
 V1_4_5_STABILIZED_STAND_BASE_COM_HEIGHT_M = 0.435
 V1_4_5_STABILIZED_MOVING_BASE_COM_HEIGHT_M = 0.415
 
+# v1.4.5s2 forward-COM stabilizer. The 2000/5000-iteration v5s runs showed that
+# the useful posture sits closer to 0.45-0.465 m than the original 0.435 target,
+# but visually still wants a slight sagittal COM shift forward over the feet.
+# Keep q_default and the vector residual contract unchanged; only the standing
+# target geometry/rewards are adjusted.
+V1_4_5_STABILIZED_FORWARD_STAND_BASE_COM_HEIGHT_M = 0.450
+V1_4_5_STABILIZED_FORWARD_MOVING_BASE_COM_HEIGHT_M = 0.420
+V1_4_5_STABILIZED_FORWARD_COM_TARGET_X_M = 0.055
+V1_4_5_STABILIZED_FORWARD_COM_BAND_HALF_WIDTH_M = 0.010
+V1_4_5_STABILIZED_FORWARD_LEAN_PROJECTED_GRAVITY_X = 0.052
+
+# v1.4.5s3 forward-COM/height refinement. The v5s2 analysis showed the best
+# posture in the 0.463-0.467 m realized-COM range but still rear-biased relative
+# to the desired support polygon. Raise the explicit height target slightly so
+# forward COM placement can be achieved with less ankle pitch bracing, then move
+# the preferred COM-over-feet band farther forward and nudge the weak lean cue.
+V1_4_5_STABILIZED_FORWARD2_STAND_BASE_COM_HEIGHT_M = 0.460
+V1_4_5_STABILIZED_FORWARD2_MOVING_BASE_COM_HEIGHT_M = 0.430
+V1_4_5_STABILIZED_FORWARD2_COM_TARGET_X_M = 0.070
+V1_4_5_STABILIZED_FORWARD2_COM_BAND_HALF_WIDTH_M = 0.010
+V1_4_5_STABILIZED_FORWARD2_LEAN_PROJECTED_GRAVITY_X = 0.065
+
 
 def validate_v1_4_5_stabilized_contract() -> None:
     """Validate the v1.4.5 stabilized q_default and vector residual profile."""

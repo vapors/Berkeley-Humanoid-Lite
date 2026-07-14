@@ -251,3 +251,80 @@ class LilgreenHardwareST3215LoadedV145StabilizedPPORunnerCfg(LilgreenHardwareST3
 
     experiment_name = "lilgreen_v1_4_5_st3215_stabilized"
     save_interval = 500
+
+
+@configclass
+class LilgreenStandST3215LoadedV145StabilizedForwardPPORunnerCfg(LilgreenStandST3215LoadedV145StabilizedPPORunnerCfg):
+    """v1.4.5s2 forward-COM Stand PPO configuration."""
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized_forward"
+    save_interval = 500
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV145StabilizedForwardPPORunnerCfg(LilgreenHardwareST3215LoadedV145StabilizedPPORunnerCfg):
+    """v1.4.5s2 Hardware PPO configuration.
+
+    Resume this from Velocity-Lilgreen-Stand-ST3215-Loaded-v5s2.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized_forward"
+    save_interval = 500
+
+
+@configclass
+class LilgreenStandST3215LoadedV145StabilizedForward2PPORunnerCfg(LilgreenStandST3215LoadedV145StabilizedForwardPPORunnerCfg):
+    """v1.4.5s3 taller forward-COM Stand PPO configuration."""
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized_forward_s3"
+    save_interval = 500
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV145StabilizedForward2PPORunnerCfg(LilgreenHardwareST3215LoadedV145StabilizedForwardPPORunnerCfg):
+    """v1.4.5s3 Hardware PPO configuration.
+
+    Resume this from Velocity-Lilgreen-Stand-ST3215-Loaded-v5s3.
+    """
+
+    experiment_name = "lilgreen_v1_4_5_st3215_stabilized_forward_s3"
+    save_interval = 500
+
+@configclass
+class LilgreenHardwareST3215LoadedV146AntiPlantedPPORunnerCfg(LilgreenHardwareST3215LoadedV145StabilizedForward2PPORunnerCfg):
+    """v1.4.6 anti-planted Hardware PPO configuration.
+
+    Use --policy_only_warm_start from a v5s3 Stand checkpoint and keep this run in
+    its own experiment root so it does not mix with stand-only stabilization runs.
+    """
+
+    experiment_name = "lilgreen_v1_4_6_st3215_anti_planted"
+    save_interval = 500
+
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV147PhaseGuidedPPORunnerCfg(LilgreenHardwareST3215LoadedV146AntiPlantedPPORunnerCfg):
+    """v1.4.7 phase-guided alternating Hardware PPO configuration.
+
+    Observation contract is 47-D because it adds [sin, cos] gait phase. Use
+    --policy_only_warm_start from a v5s3 Stand checkpoint; train_eval.py will
+    partially expand the actor input layer and reset critic/optimizer.
+    """
+
+    experiment_name = "lilgreen_v1_4_7_st3215_phase_guided"
+    save_interval = 500
+
+
+
+@configclass
+class LilgreenHardwareST3215LoadedV148PhaseLiftStepPPORunnerCfg(LilgreenHardwareST3215LoadedV147PhaseGuidedPPORunnerCfg):
+    """v1.4.8 phase-lift/foot-placement Hardware PPO configuration.
+
+    Observation contract remains the v1.4.7 47-D phase-guided input.  Use
+    --policy_only_warm_start from the best v1.4.7 checkpoint; critic and optimizer
+    should be reset because clearance/placement/anti-rocking rewards are new.
+    """
+
+    experiment_name = "lilgreen_v1_4_8_st3215_phase_lift_step"
+    save_interval = 500

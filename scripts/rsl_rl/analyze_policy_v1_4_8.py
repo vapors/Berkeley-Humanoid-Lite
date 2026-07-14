@@ -1,7 +1,7 @@
-"""Offline rollout diagnostics for Berkeley Humanoid Lite v1.4.5 move-now loaded-ST3215 policies.
+"""Offline rollout diagnostics for Berkeley Humanoid Lite v1.4.8 phase-guided loaded-ST3215 policies.
 
 This script is intentionally analysis-only. It loads a checkpoint, rolls out the selected
-v1.4.5 move-now loaded-ST3215 task, and writes JSON/CSV summaries for raw policy output, bounded action use,
+v1.4.8 phase-guided loaded-ST3215 task, and writes JSON/CSV summaries for raw policy output, bounded action use,
 physical targets, measured joints, velocity saturation, torque use, standing quality,
 and fall/timeout counts.
 
@@ -31,7 +31,7 @@ import cli_args  # isort: skip
 from command_override import apply_velocity_command_override  # isort: skip
 
 
-parser = argparse.ArgumentParser(description="Analyze a v1.4.5 move-now loaded-ST3215 Berkeley Humanoid Lite policy rollout.")
+parser = argparse.ArgumentParser(description="Analyze a v1.4.8 phase-guided loaded-ST3215 Berkeley Humanoid Lite policy rollout.")
 parser.add_argument("--task", type=str, required=True, help="Registered Isaac Lab task name.")
 parser.add_argument("--num_envs", type=int, default=256, help="Parallel rollout environments.")
 parser.add_argument("--steps", type=int, default=1500, help="Policy steps to collect.")
